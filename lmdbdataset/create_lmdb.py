@@ -61,6 +61,32 @@ class BinaryDataFlow(dataset.RNGDataFlow):
         return os.path.abspath(path+'/..')
 
 
+def create_lmdb(
+        from_dir,
+        to_dir,
+        save_as='numpy',
+        split=None,
+        workers=0):
+
+    from_dir = os.path.expanduser(from_dir)
+    to_dir = os.path.expanduser(to_dir)
+    assert os.path.isdir(from_dir)
+    assert os.path.isdir(to_dir)
+
+    assert save_as in ['jpeg', 'numpy']
+    assert split in [None, 'val', 'train']
+    splits = ['val', 'train'] if split is None else [split]
+
+    for split in splits:
+        split_str = 'validation' if split == 'val' else 'training'
+        to_file = os.path.join(to_dir, split+'.lmdb')
+
+        print(f'Starting to encode the {split_str} set as a {save_as}-lmdb file')
+        ds = BinaryDataFlow(from_dir, split, save_as=save_as)
+        if workers > 0:
+            ds = MultiProcessRunnerZMQ(ds, num_proc=workers)
+        LMDBSerializer.save(ds, to_file)
+
 parser = argparse.ArgumentParser(description='Convert ImageNet Folder to LMDB File')
 parser.add_argument('--from-dir', '-from', type=str,
     help='path to ImageNet root folder. This root should contain subfolders val/ and train/')
@@ -79,20 +105,5 @@ parser.add_argument('--workers', '-workers', default=0, type=int,
 
 if __name__ == '__main__':
     args = parser.parse_args()
-
-    splits = ['val', 'train'] if args.split is None else [args.split]
-    from_dir = os.path.expanduser(args.from_dir)
-    to_dir = os.path.expanduser(args.to_dir)
-
-    assert os.path.isdir(from_dir)
-    assert os.path.isdir(to_dir)
-
-    for split in splits:
-        split_str = 'validation' if split == 'val' else 'training'
-        to_file = os.path.join(to_dir, split+'.lmdb')
-
-        print(f'Starting to encode the {split_str} set as a {args.save_as}-lmdb file')
-        ds = BinaryDataFlow(from_dir, split, save_as=args.save_as)
-        if args.workers > 0:
-            ds = MultiProcessRunnerZMQ(ds, num_proc=args.workers)
-        LMDBSerializer.save(ds, to_file)
+    create_lmdb(
+        args.from_dir, args.to_dir, args.save_as, args.split, args.workers)
