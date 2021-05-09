@@ -91,7 +91,6 @@ class LMDBIterDataset(IterableDataset):
             split='train',
             transform=None,
             transform_target=None,
-            shuffle=None,
             imgtype='numpy',  # or 'jpeg'
     ):
     # based on timm's ImageDataset
@@ -104,9 +103,8 @@ class LMDBIterDataset(IterableDataset):
         assert imgtype in ['numpy', 'jpeg']
         self.imgtype = imgtype
 
-        shuffle = (split=='train') if shuffle is None else shuffle
-        self.getter = LMDBGetter(self.lmdb_path, shuffle=shuffle)
-        # Alternatively: LMDBSerializer.load(self.root, shuffle=shuffle)
+        self.getter = LMDBGetter(self.lmdb_path, shuffle=False)
+        # Alternatively: LMDBSerializer.load(self.root, shuffle=False)
         self._called_reset_state = False
         self.transform = transform
         self.transform_target = transform_target
