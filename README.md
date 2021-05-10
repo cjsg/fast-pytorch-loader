@@ -12,8 +12,13 @@ repo, which I discovered only later.
 
 - `lmdb`
 - `tensorpack` (but tensorflow is not needed)
-- `torch`
-- Others? -> test!
+- `Pillow`, `numpy`
+
+**Remark**: Currently, when loading the `lmdbdataset` package, the underlying
+`tensorpack` package will try to load tensorflow and print `Failed to import
+tensorflow` if it failed. You can ignore this message.
+
+
 
 ## Usage
 
