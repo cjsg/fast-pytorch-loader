@@ -10,20 +10,30 @@ repo, which I discovered only later.
 
 ## Requirements
 
+- `Pillow`, `numpy`, `argparse`, `pathlib`
 - `lmdb`
 - `tensorpack` (but tensorflow is not needed)
-- `Pillow`, `numpy`
 
 **Remark**: Currently, when loading the `lmdbdataset` package, the underlying
 `tensorpack` package will try to load tensorflow and print `Failed to import
 tensorflow` if it failed. You can ignore this message.
 
+## Installation
+
+To install the package:
+```
+    git clone https://github.com/cjsg/fast-pytorch-loader.git
+    cd fast-pytorch-loader/
+    python setup.py install
+```
+To install it in development mode, replace `python setup.py install` by `python
+setup.py build develop`.
 
 
 ## Usage
 
 The idea behind this loader is to put all (ImageNet) images into 1 big `.lmdb`
-file, which dramatically reduces access overheads (see sections below).
+file, which dramatically reduces access overheads (see section Background below).
 
 #### Creating the LMDB data file
 
