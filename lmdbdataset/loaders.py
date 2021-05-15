@@ -4,7 +4,7 @@ from io import BytesIO
 from PIL import Image
 import numpy as np
 import torch
-from torch.utils.data import Dataset, IterableDataset
+from torch.utils.data import Dataset, IterableDataset, get_worker_info
 
 try:
     from dataflow import LMDBData  # only tensorpack.dataflow needed
@@ -17,12 +17,19 @@ class LMDBGetter(LMDBData):
         super(LMDBGetter, self).__init__(lmdb_path, shuffle, keys)
         assert self.keys is not None, "No '__keys__' entry found in lmdb file"
         self.ix_to_keys = {ix: k for (ix, k) in enumerate(self.keys)}
+        self._start = 0
+        self._end = len(self)
 
     def __iter__(self):  # for iterable dataset
-        for k,v in super(LMDBGetter, self).__iter__():
-            yield loads(v)
+        # for k,v in super(LMDBGetter, self).__iter__():
+        #     yield loads(v)
+        with self._guard:
+            for ix in range(self._start, self._end):
+                k = self.ix_to_keys[ix]
+                v = self._txn.get(k)
+                yield loads(v)
 
-    def __getitem__(self, ix):  # for key-based dataset
+    def __getitem__(self, ix):  # for map-style dataset
         with self._guard:
             k = self.ix_to_keys[ix]  # k = u'{:08}'.format(ix).encode('ascii')
             v = self._txn.get(k)
@@ -42,24 +49,25 @@ class LMDBDataset(Dataset):
         fname = 'train.lmdb' if split == 'train' else 'val.lmdb'
         lmdb_path = os.path.join(root, fname)
         self.lmdb_path = lmdb_path
-        assert os.path.exists(self.lmdb_path)
+        assert os.path.exists(self.lmdb_path), f'Non existing path {self.lmdb_path}'
 
-        assert imgtype in ['numpy', 'jpeg']
+        assert imgtype in ['numpy', 'jpeg'], f'Unknonwn imgtype {imgtype}'
         self.imgtype = imgtype
 
         shuffle = (split=='train') if shuffle is None else shuffle
 
         self.getter = LMDBGetter(self.lmdb_path, shuffle=shuffle)
 
-        self._called_reset_state = False
+        self._initialized_worker = False
         self.transform = transform
         self.transform_target = transform_target
 
     def __getitem__(self, ix):
-        if not self._called_reset_state:
+        if not self._initialized_worker:
             self.getter.reset_state()
-            self._called_reset_state = True
-        img, target = self.getter.__getitem__(ix)
+            self._initialized_worker = True
+        # img, target = self.getter.__getitem__(ix)
+        img, target = self.getter[ix]
         if self.imgtype == 'numpy':
             img = torch.tensor(img)
         elif self.imgtype == 'jpeg':
@@ -98,21 +106,35 @@ class LMDBIterDataset(IterableDataset):
         fname = 'train.lmdb' if split == 'train' else 'val.lmdb'
         lmdb_path = os.path.join(root, fname)
         self.lmdb_path = lmdb_path
-        assert os.path.exists(self.lmdb_path)
+        assert os.path.exists(self.lmdb_path), f'Non existing path {self.lmdb_path}'
 
-        assert imgtype in ['numpy', 'jpeg']
+        assert imgtype in ['numpy', 'jpeg'], f'Unknonwn imgtype {imgtype}'
         self.imgtype = imgtype
 
         self.getter = LMDBGetter(self.lmdb_path, shuffle=False)
         # Alternatively: LMDBSerializer.load(self.root, shuffle=False)
-        self._called_reset_state = False
         self.transform = transform
         self.transform_target = transform_target
 
+        self._initialized_worker = False
+
+    def initialize_worker(self):
+        '''
+            When loading this iterative dataset with multiple workers, then
+            each worker gets a different chunk of the dataset to load, and
+            loads it sequentially.
+        '''
+        self.getter.reset_state()
+        worker_info = get_worker_info()
+        if worker_info is not None:  # multi-process loading: we are in a worker
+            per_worker = int(np.ceil((self.getter._end - self.getter._start) / float(worker_info.num_workers)))
+            worker_id = worker_info.id
+            self.getter._start = self.getter._start + worker_id * per_worker
+            self.getter._end = min(self.getter._start + per_worker, self.getter._end)
 
     def __iter__(self):
-        if not self._called_reset_state:
-            self.getter.reset_state()
+        if not self._initialized_worker:
+            self.initialize_worker()
             self._reset_called = True
         for img, target in self.getter:
             if self.imgtype == 'numpy':
