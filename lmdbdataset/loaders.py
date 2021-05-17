@@ -4,7 +4,8 @@ from io import BytesIO
 from PIL import Image
 import numpy as np
 import torch
-from torch.utils.data import Dataset, IterableDataset, get_worker_info
+import random
+from torch.utils.data import Dataset, IterableDataset, get_worker_info, DataLoader
 
 try:
     from dataflow import LMDBData  # only tensorpack.dataflow needed
@@ -34,6 +35,10 @@ class LMDBGetter(LMDBData):
             k = self.ix_to_keys[ix]  # k = u'{:08}'.format(ix).encode('ascii')
             v = self._txn.get(k)
             return loads(v)
+
+    @property
+    def len_per_worker(self):
+        return self._end - self._start
 
 
 class LMDBDataset(Dataset):
@@ -155,7 +160,74 @@ class LMDBIterDataset(IterableDataset):
             yield img, target
 
     def __len__(self):
-        if hasattr(self.getter, '__len__'):
-            return len(self.getter)
-        else:
-            return 0
+        return self.getter._end - self.getter._start
+        # if hasattr(self.getter, '__len__'):
+        #     return len(self.getter)
+        # else:
+        #     return 0
+
+
+class BufferedDataset(IterableDataset):
+    def __init__(self, iterable_dataset, buffer_size, num_workers=0, collate_fn=None,
+           pin_memory=False, drop_last=False, timeout=0, worker_init_fn=None,
+           *, prefetch_factor=2, persistent_workers=False):
+
+        super(BufferedDataset, self).__init__()
+
+        # multiply prefetch_factor by batch_size, because we set batch_size to 1
+        self.loader = DataLoader(
+            iterable_dataset, batch_size=None, shuffle=False,
+            num_workers=num_workers, pin_memory=pin_memory, timeout=timeout,
+            worker_init_fn=worker_init_fn,
+            prefetch_factor=prefetch_factor,  # x batch-size
+            persistent_workers=persistent_workers)
+
+        self.buffer_size = buffer_size
+        self.buf = []
+
+    def __len__(self):
+        return len(self.loader.dataset)
+
+    def __iter__(self):
+        for x in self.loader:
+            if len(buf) == self.buffer_size:
+                idx = random.randint(0, self.buffer_size - 1)
+                yield buf[idx]
+                buf[idx] = x
+            else:
+                buf.append(x)
+        random.shuffle(buf)
+        while buf:
+            yield buf.pop()
+
+
+# class BufferedDataLoader(DataLoader):
+#     def __init__(self, buf_size, dataset, batch_size=1, shuffle=False, num_workers=0, collate_fn=None,
+#            pin_memory=False, drop_last=False, timeout=0, worker_init_fn=None,
+#            *, prefetch_factor=2, persistent_workers=False):
+# 
+#         super(BufferedDataLoader, self).__init__(
+#             dataset, batch_size=batch_size, shuffle=shuffle,
+#             num_workers=num_workers, collate_fn=collate_fn,
+#             pin_memory=pin_memory, drop_last=drop_last, timeout=timeout,
+#             worker_init_fn=worker_init_fn, *, prefetch_factor=prefetch_factor,
+#             persistent_workers=persistent_workers)
+# 
+#         self.loader = DataLoader(
+#             dataset, batch_size=None, shuffle=False, num_workers=num_workers,
+#             pin_memory=pin_memory, drop_last=drop_last, timeout=timeout,
+#             worker_init_fn=worker_init_fn, *,
+#             prefetch_factor=prefetch_factor*batch_size,  # multiply by batch_size, because we set batch_size to 1
+#             persistent_workers=persistent_workers)
+# 
+#         self.batch_size = batch_size
+#         self.sampler = 
+#         self.batch_sampler = 
+#         self.collate_fn = DataLoader.default_collate
+#         self.buf_size = buf_size
+#         self.buffer = []
+# 
+#     def __iter__(self):
+#         for data in self.loader:
+#             if len(self.buffer) == buf_size:
+                
