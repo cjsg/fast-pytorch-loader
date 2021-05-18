@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import random
 from torch.utils.data import Dataset, IterableDataset, get_worker_info, DataLoader
+from torch.utils.data.dataloader import default_collate
 
 try:
     from dataflow import LMDBData  # only tensorpack.dataflow needed
@@ -190,16 +191,94 @@ class BufferedDataset(IterableDataset):
 
     def __iter__(self):
         for x in self.loader:
-            if len(buf) == self.buffer_size:
+            if len(self.buf) == self.buffer_size:
                 idx = random.randint(0, self.buffer_size - 1)
-                yield buf[idx]
-                buf[idx] = x
+                yield self.buf[idx]
+                self.buf[idx] = x
             else:
-                buf.append(x)
-        random.shuffle(buf)
-        while buf:
-            yield buf.pop()
+                self.buf.append(x)
+        random.shuffle(self.buf)
+        while self.buf:
+            yield self.buf.pop()
 
+
+class BufferedDataLoader(object):
+    def __init__(self, buffer_size, dataset, batch_size, drop_last=False, **loader_kwargs):
+        # loader_args and loader_kwargs should not contain the dataset,
+        # batch_size, drop_last and collate_fn argument
+        loader_collate_fn = lambda data_list: data_list
+        if 'collate_fn' in loader_kwargs:
+            self.collate_fn = loader_kwargs['collate_fn']
+        else:
+            self.collate_fn = default_collate
+        loader_kwargs['collate_fn'] = loader_collate_fn
+
+        if 'generator' in loader_kwargs:
+            self.generator = loader_kwargs['generator']
+        else:
+            self.generator = torch.Generator()
+
+        assert buffer_size >= batch_size, 'buffer_size must be >= batch_size'
+        # NB: drop_last is always set to False in the internal data-loader. The
+        # `drop_last`argument is only used for the BufferedDataLoader
+        self.loader = DataLoader(
+            dataset, batch_size, drop_last=False, **loader_kwargs)
+        self.batch_size = batch_size
+        self.drop_last = drop_last
+        self.buffer_size = buffer_size
+        self.buffer = []
+
+    def __iter__(self):
+        batch, ixs = [], []
+        for data_batch in self.loader:
+            ixs = torch.randint(
+                high=self.buffer_size, size=(len(data_batch),), dtype=torch.int64,
+                generator=self.generator).tolist()
+            for data in data_batch:
+                if len(self.buffer) == self.buffer_size:
+                    ix = ixs.pop()
+                    batch.append(self.buffer[ix])
+                    self.buffer[ix] = data
+                    if len(batch) == self.batch_size:
+                        yield self.collate_fn(batch)
+                        batch = []
+                else:
+                    self.buffer.append(data)
+        random.shuffle(self.buffer)
+        while self.buffer:
+            batch.append(self.buffer.pop())
+            if len(batch) == self.batch_size:
+                yield self.collate_fn(batch)
+                batch = []
+        if len(batch) > 0 and not self.drop_last:
+            yield self.collate_fn(batch)
+
+    # def __iter__(self):
+    #     batch = []
+    #     for data_batch in self.loader:
+    #         if len(self.buffer) >= self.buffer_size:
+    #             # sample a batch
+    #             ixs = torch.randint(
+    #                 high=len(self.buffer), size=(len(data_batch),), dtype=torch.int64,
+    #                 generator=torch.Generator()).tolist()
+    #             for ix in ixs:
+    #                 batch.append(self.buffer[ix])
+    #                 self.buffer[ix] = data_batch.pop()
+    #             if len(batch) == self.batch_size:
+    #                 yield self.collate_fn(batch)
+    #                 batch = []
+    #         else:
+    #             self.buffer.extend(data_batch)
+    #     random.shuffle(self.buffer)
+    #     while self.buffer:
+    #         batch.append(self.buffer.pop())
+    #         if len(batch) == self.batch_size:
+    #             yield batch
+    #             batch = []
+    #     if len(batch) > 0 and 
+
+    def __len__(self):
+        return len(self.loader)
 
 # class BufferedDataLoader(DataLoader):
 #     def __init__(self, buf_size, dataset, batch_size=1, shuffle=False, num_workers=0, collate_fn=None,
@@ -223,7 +302,7 @@ class BufferedDataset(IterableDataset):
 #         self.batch_size = batch_size
 #         self.sampler = 
 #         self.batch_sampler = 
-#         self.collate_fn = DataLoader.default_collate
+#         self.collate_fn = default_collate
 #         self.buf_size = buf_size
 #         self.buffer = []
 # 
