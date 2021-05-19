@@ -1,4 +1,4 @@
-from .loaders import LMDBDataset, LMDBIterDataset, BufferedDataset, BufferedDataLoader
+from .loaders import LMDBDataset, LMDBIterDataset, BufferedDataLoader
 from .create_lmdb import create_lmdb
 
-__all__ = ['LMDBDataset', 'LMDBIterDataset', 'BufferedDataset', 'create_lmdb', 'BufferedDataLoader']
+__all__ = ['LMDBDataset', 'LMDBIterDataset', 'create_lmdb', 'BufferedDataLoader']
