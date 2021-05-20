@@ -32,7 +32,6 @@ class LMDBGetter(LMDBData):
                 k = self.ix_to_keys[ix]
                 v = self._txn.get(k)
                 yield loads(v)
-            # print(f'finished worker {self._worker_start}')
 
     def __getitem__(self, ix):  # for map-style dataset
         with self._guard:
@@ -141,6 +140,7 @@ class LMDBIterDataset(IterableDataset):
             worker_id = worker_info.id
             self.getter._worker_start = self.getter._start + worker_id * per_worker
             self.getter._worker_end = min(self.getter._worker_start + per_worker, self.getter._end)
+            print(f'Initialized LMDBIterDataset worker {worker_id}')
 
     def __iter__(self):
         if not self._initialized_worker:
@@ -178,52 +178,53 @@ class BufferedDataset(IterableDataset):
     def __init__(self, dataset):
         super(BufferedDataset, self).__init__()
         self.dataset = dataset
-        self.generator = torch.Generator()
+        # self.generator = torch.Generator()
         self._initialized_buffer = False
         self._iterdataset = None
         # self._iterdataset = iter(dataset)
+        print("End of BufferedDataset init.")
 
-    # def initialize_buffer(self, buffered_dataloader): # buf, buffer_size, persistent_buffer):
-    #     # The buffer comes from the loader and is the same for all workers
-    #     self._buffer = buffered_dataloader.buffer
-    #     self._buffer_size = buffered_dataloader.buffer_size
-    #     self._persistent_buffer = buffered_dataloader.persistent_buffer
-    #     self._worker_manager = buffered_dataloader.worker_manager
-    #     self._initialized_buffer = True
-
-    def initialize_buffer(
-        self, buf, buffer_size, persistent_buffer, worker_manager):
+    def initialize_buffer(self, buffered_dataloader): # buf, buffer_size, persistent_buffer):
         # The buffer comes from the loader and is the same for all workers
-        self._buffer = buf
-        self._buffer_size = buffer_size
-        self._persistent_buffer = persistent_buffer
-        self._worker_manager = worker_manager
+        self._buffer = buffered_dataloader.buffer
+        self._buffer_size = buffered_dataloader.buffer_size
+        self._persistent_buffer = buffered_dataloader.persistent_buffer
+        self._worker_manager = buffered_dataloader.worker_manager
         self._initialized_buffer = True
+        print(f"Initialized buffer in BufferedDataset with size {self._buffer_size}")
 
     def __iter__(self):
+        print('Entering BufferedDataset iter loop')
         if not self._initialized_buffer:
-            raise RuntimeError('Buffer of BufferedDataset have not been initialized')
+            raise RuntimeError('Buffer or BufferedDataset have not been initialized')
         ixs, n = [], 0
         if self._iterdataset is None:
             self._iterdataset = iter(self.dataset)
+        worker_info = get_worker_info()
+        worker_id = None if worker_info is None else worker_info.id
+        print(f"Starting the BufferedDataset loop with {worker_id}")
+        first_pass = True
         while n < self.dataset.worker_len():
-            n += 1
             try:
+                if first_pass:
+                    print("Just before LMDBIterDataset initialization")
+                    first_pass = False
                 x = next(self._iterdataset)
             except StopIteration:
+                print(f"Got stop iteration. Length of buffer {len(self._buffer)}")
                 if self._persistent_buffer:
                     # Continue loop
                     self._iterdataset = iter(self.dataset)
                     x = next(self._iterdataset)
                 else:
                     # Stop loading data and start popping data from the buffer
-                    self.worker_manager.done_looping()
                     break
             if len(self._buffer) == self._buffer_size:
                 if len(ixs) == 0:
                     ixs = torch.randint(
-                        high=self._buffer_size, size=(100,), dtype=torch.int64,
-                        generator=self.generator).tolist()
+                        high=self._buffer_size, size=(100,), dtype=torch.int64).tolist()
+                        # generator=self.generator).tolist()
+                n += 1
                 ix = ixs.pop()
                 # ix = random.randint(0, self._buffer_size - 1)
                 yield self._buffer[ix]
@@ -231,15 +232,16 @@ class BufferedDataset(IterableDataset):
             else:
                 self._buffer.append(x)
 
-        while self.worker_manager.wait_for_others():
-            sleep(.1)
-        # random.shuffle(self._buffer)
-        while self._buffer:
-            yield self._buffer.pop()
+        if not self._persistent_buffer:
+            self._worker_manager.done_looping()
+            while self._worker_manager.wait_for_others():
+                sleep(.1)
+            # random.shuffle(self._buffer)
+            while self._buffer:
+                yield self._buffer.pop()
 
     def __len__(self):
         return len(self.dataset)
-
 
 class WorkerManager(object):
     def __init__(self, num_workers, buf):
@@ -265,7 +267,6 @@ class WorkerManager(object):
         else:
             return False
 
-
 class BufferedDataLoader(DataLoader):
     def __init__(self, buffer_size, dataset, batch_size, persistent_buffer,
                  num_workers=0, **kwargs):
@@ -274,33 +275,23 @@ class BufferedDataLoader(DataLoader):
         self.buffer = []
         self.worker_manager = WorkerManager(num_workers, self.buffer)
 
-        if 'worker_init_fn' in kwargs:
-            self._original_worker_init_fn = kwargs['worker_init_fn']
-            del kwargs['worker_init_fn']
-        else:
-            self._original_worker_init_fn = None
+        # if 'worker_init_fn' in kwargs:
+        #     self._original_worker_init_fn = kwargs['worker_init_fn']
+        #     del kwargs['worker_init_fn']
+        # else:
+        #     self._original_worker_init_fn = None
 
         super(BufferedDataLoader, self).__init__(
-            dataset, batch_size=batch_size,
-            worker_init_fn=self.initialize_buffer_in_dataset, **kwargs)
+            dataset, batch_size=batch_size, num_workers=num_workers, **kwargs)
+            # worker_init_fn=self.initialize_buffer_in_dataset, **kwargs)
 
-        print(self.worker_init_fn)
+        self.dataset.initialize_buffer(self)
 
-    def initialize_buffer_in_dataset(self, worker_id):
-        print('calling initialize_buffer_in_dataset')
-        if self._original_worker_init_fn is not None:
-            self._original_worker_init_fn(worker_id)
-        worker_info = torch.utils.data.get_worker_info()
-        dataset = worker_info.dataset
-        dataset.initialize_buffer(
-            self.buffer, self.buffer_size,
-            self.persistent_buffer, self.wroker_manager)
-
-    # def __iter__(self):
-    #     iterloader = super(BufferedDataLoader, self).__iter__()
-    #     for data in iterloader:
-    #         yield data
-    #     self.worker_manager.reset()
+    def __iter__(self):
+        iterloader = super(BufferedDataLoader, self).__iter__()
+        for data in iterloader:
+            yield data
+        self.worker_manager.reset()
 
 
 class BufferedDataLoader2(object):
@@ -397,7 +388,7 @@ class BufferedDataLoader2(object):
         if 'generator' in loader_kwargs:
             self.generator = loader_kwargs['generator']
         else:
-            self.generator = torch.Generator()
+            self.generator = None
 
         assert buffer_size >= batch_size, 'buffer_size must be >= batch_size'
         # NB: drop_last is always set to False in the internal data-loader. The
@@ -408,7 +399,6 @@ class BufferedDataLoader2(object):
         self.drop_last = drop_last
         self.persistent_buffer = persistent_buffer
         self.buffer_size = min(buffer_size, len(self.loader.dataset))
-        print('buffer_size', self.buffer_size)
         self.buffer = []
         self.batch = []
 
@@ -434,8 +424,8 @@ class BufferedDataLoader2(object):
                     # Break and start flushing the buffer
                     break
             ixs = torch.randint(
-                high=self.buffer_size, size=(len(data_batch),), dtype=torch.int64,
-                generator=self.generator).tolist()
+                high=self.buffer_size, size=(len(data_batch),), dtype=torch.int64).tolist()
+                # generator=self.generator).tolist()
             for data in data_batch:
                 if len(self.buffer) == self.buffer_size:
                     ix = ixs.pop()
