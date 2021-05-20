@@ -240,21 +240,24 @@ class SafeList(object):
 
     def append(self, x):
         self._lock.acquire()
-        self.list.append(x)
+        self._list.append(x)
         self._lock.release()
 
     def pop(self):
         self._lock.aquire()
-        x = self.list.pop()
+        x = self._list.pop()
         self._lock.release()
         return x
 
     def get_and_replace(self, ix, x):
         self._lock.acquire()
-        out = self.list[ix]
-        self.list[ix] = x
+        out = self._list[ix]
+        self._list[ix] = x
         self._lock.release()
         return out
+
+    def __len__(self):
+        return len(self._list)
 
 
 class WorkerManager(object):
