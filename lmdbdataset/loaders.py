@@ -18,6 +18,10 @@ except ImportError:
 
 
 class LMDBGetter(LMDBData):
+    '''
+        This class is used internally both by the LMDBDataset class (which uses
+        `__get_item__`) and the LMDBIterDataset (which uses `__iter__`)
+    '''
     def __init__(self, lmdb_path, shuffle, keys=None):
         super(LMDBGetter, self).__init__(lmdb_path, shuffle, keys)
         assert self.keys is not None, "No '__keys__' entry found in lmdb file"
@@ -46,14 +50,13 @@ class LMDBGetter(LMDBData):
 
 
 class LMDBDataset(Dataset):
-    def __init__(
-            self,
-            root,
-            split='train',
-            transform=None,
-            transform_target=None,
-            shuffle=None,
-            imgtype='numpy',):
+    def __init__(self, root, split='train', transform=None, 
+                 transform_target=None, shuffle=None, imgtype='numpy',):
+        '''
+            A map-style dataset that opens an LMDB file and randomly loads its
+            files/images using the LMDB's dictionnary/key-value based access.
+            Note that the LMDB file is opened only once.
+        '''
         super(LMDBDataset, self).__init__()
         fname = 'train.lmdb' if split == 'train' else 'val.lmdb'
         lmdb_path = os.path.join(root, fname)
@@ -102,14 +105,15 @@ class LMDBDataset(Dataset):
 
 
 class LMDBIterDataset(IterableDataset):
-    def __init__(
-            self,
-            root,
-            split='train',
-            transform=None,
-            transform_target=None,
-            imgtype='numpy',  # or 'jpeg'
-    ):
+    def __init__(self, root, split='train', transform=None,
+                 transform_target=None, imgtype='numpy',  # or 'jpeg'):
+    '''
+        An iterable dataset that opens an LMDB file and reads it in the order
+        of its keys (which should be the order of storage). If multiple workers
+        are used, each worker gets a different chunk of the dataset.
+
+        Argument split should be 'train' or 'val'.
+    '''
     # based on timm's ImageDataset
         super(LMDBIterDataset, self).__init__()
         fname = 'train.lmdb' if split == 'train' else 'val.lmdb'
@@ -165,10 +169,6 @@ class LMDBIterDataset(IterableDataset):
 
     def __len__(self):
         return self.getter._end - self.getter._start
-        # if hasattr(self.getter, '__len__'):
-        #     return len(self.getter)
-        # else:
-        #     return 0
 
     def worker_len(self):
         return self.getter._worker_end - self.getter._worker_start
@@ -176,6 +176,11 @@ class LMDBIterDataset(IterableDataset):
 
 class SafeBuffer(object):
     def __init__(self, buffer_size: int, num_workers: int):
+    '''
+        This class provides a thread-safe buffer to be used by the
+        `BufferedDataLoader`, which will pass this buffer to every of its
+        workers (the dataset-loading sub-processes).
+    '''
         self._list = []
         self._lock = Lock()
         self._buffer_size = buffer_size
@@ -227,6 +232,11 @@ class SafeBuffer(object):
 
 
 class BufferedDataset(IterableDataset):
+    '''
+        This class is a wrapper for iterable datasets that is used by the
+        BufferedDataLoader to handle access to a joint buffer between
+        different workers.
+    '''
     def __init__(self, dataset):
         super(BufferedDataset, self).__init__()
         self.dataset = dataset
@@ -279,7 +289,70 @@ class BufferedDataset(IterableDataset):
 class BufferedDataLoader(DataLoader):
     def __init__(self, buffer_size, dataset, batch_size, persistent_buffer=True,
                  num_workers=0, **kwargs):
+    '''
+    This dataloader wraps and sub-classes the usual PyTorch DataLoader and is
+    intended for use with an iterable dataset where each worker has access to a
+    different chunk of the data. Each worker loads a new datapoint form the
+    disc and exchanges it with a random point from the buffer of the
+    BufferedDataLoader.
 
+    Args
+    ----
+        buffer_size (int)   The total buffer size (1 buffer for all workers)
+
+        dataset (Dataset)   Typically an iterable dataset where each worker
+            accesses a different chunk of the dataset. This dataset must
+            implement the __len__ method.
+
+        batch_size (int)    The output batch_size. This is also the batch_size
+            used by the workers to import/read the data (see section 'Workflow
+            of self.__iter__ below)
+
+        persistent_buffer (bool)
+            Since the first datapoints loaded by the worker only serve to fill
+            the buffer, the workers will have finished their loop over the
+            dataset before the dataloader has actually returned `len(dataset)`
+            datapoints (actually `len(dataloader)` batches), i.e., it has not
+            finished its 'epoch'. The `persistent_buffer` key says how it
+            should finish that epoch: either by stopping the workers and
+            popping data from the buffer until its empty (False); or by letting
+            the workers start a new loop over the dataset and proceeding with
+            the sample-and-replace process in the buffer as before. That way,
+            the buffer will not need to get filled from scratch again in the
+            next epoch. If `persistent_workers` is True, then, in the next
+            epoch, the workers will resume their loop over the dataset from
+            wherever they finished in the previous epoch.
+
+        drop_last (bool)    Whether or not to drop the last incomplete batch.
+            Irrelevant when `persistent_buffer` is True.
+            (Remark: since each worker loads data in batches but only gets
+            access to a specific subset of the data, the last batch from each
+            worker may contain less than `batch_size` points.  However, these
+            points get all passed separately to the global buffer. The actual
+            output batches are constructed from this buffer, so that it's
+            really only the last output batch for which this drop_last option
+            is relevant.)
+
+        **loader_args   Named arguments. Can be any of the arguments of the
+            usual torch.utils.data.DataLoader.
+
+    Comparison with torch.utils.data.BufferedShuffleDataset:
+    --------------------------------------------------------
+
+    PyTorch 1.8.1 provides a BufferedShuffleDataset that can f.ex. be called as
+    follows:
+        ```
+        unshuffled_dataset = LMDBIterDataset(...)
+        shuffled_dataset = BufferedShuffleDataset(unshuffled_dataset, buffer_size)
+        dataloader = torch.utils.data.DataLoader(shuffled_dataset, num_workers, ...)
+        ```
+    Here, `shuffled_dataset` gets cloned in every worker (not
+    `unshuffled_dataset` as in our BufferedDataLoader). That means that the
+    buffer is specific to each worker, and contains / shuffles only the data
+    loaded by that specific worker. I.e., the output batches will only contain
+    shuffled data from 1 worker each, whereas our BufferedDataLoader contains
+    and shuffles data accross all the workers.
+    '''
         if 'persistent_workers' not in kwargs:
             kwargs['persistent_workers'] = persistent_buffer
         if persistent_buffer and (not kwargs['persistent_workers']):
