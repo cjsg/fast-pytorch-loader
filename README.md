@@ -49,61 +49,59 @@ directory where to store the `.lmdb` file(s), and `FORMAT` can take 2 values:
 `jpeg` or `numpy` depending on whether you want the images encoded as JPEG
 images or as numpy array inside the `.lmdb` files (see below).
 
-#### The loader
+#### The datasets and loaders
 
-To use the loader, load the LMDBDataset and then the usual pytorch loader.
-
+This package implements two LMDB-based loading proceedures: one on the iterable
+`LMDBIterDataset` combined with a custom `BufferedDataLoader`,
+```python
+from loaders import LMDBIterDataset, BufferedDataLoader
+dataset = LMDBIterDataset(root, split, transform, transform_target, imgtype)
+trainloader = BufferedDataLoader(buffer_size, dataset, batch_size=bs,
+    persistent_buffer, num_workers, **pytorch_loader_kwargs)
+```
+and one based on the map-style `LMDBDataset` combined with the usual PyTorch `DataLoader`:
 ```python
 from loaders import LMDBDataset
-dataset = LMDBDataset(root, split, transform, transform_target,shuffle, imgtype)
-# OR dataset = LMDBIterDataset(root, split, transform, transform_target, imgtype)
-loader = torch.utils.data.DataLoader(dataset, batch_size=BATCH_SIZE, num_workers=NUM_WORKERS)
+dataset = LMDBDataset(root, split, transform, transform_target, shuffle, imgtype)
+loader = torch.utils.data.DataLoader(dataset, batch_size, num_workers)
 ```
-where `root` is the path to the dir containing the `.lmdb` (created above),
+Here, `root` is the path to the dir containing the `.lmdb` (created above),
 `split` is `val` or `train`, `imgtype`is `numpy` or `jpeg` (must the same than
 the `FORMAT` used in `create_lmdb`) and `tranform`, `transform_target` are the
 usual pytorch image/target transforms to be applied to every image.
 
-**Beware**: `LMDBIterDataset` does not use any shuffling. Since, when using the
-`LMDBIterDataset`with multiple workers, the dataset gets replicated, there will
-be duplicates in the loaded data. If you want to use the iterable dataset and
-have some shuffling, we recommend using
-`torch.utils.data.BufferedShuffleDataset`.
+**On the MPI-cluster, and more generally on distributed file systems and/or
+with non-SSD hard-drives, the `LMDBIterDataset` solution will be faster,**
+because it reads the data in the order it has been stored (see section
+Background). Our custom `BufferedDataLoader` is then used to shuffle the data.
+It wraps and sub-classes PyTorch's usual `DataLoader` to keep a buffer of
+images. It adds every new image from the `LMDBIterDataset` to its internal
+buffer, and then randomly samples an image from the buffer.
 
+_Remark_: PyTorch 1.8.1 also provides `torch.utils.data.BufferedShuffleDataset`
+which can be used to wrap any iterable dataset and then passed to the usual
+PyTorch `DataLoader`. However, with this solution, every worker has its own
+buffer, whereas with our `BufferedDataLoader`, the buffer is centralized
+accross workers. This is important in our case, since, with `LMDBIterDataset`,
+the dataset gets partitioned between workers (i.e., each worker sees a
+different chunk).
 
 
 ## Background 
 
-### Avoiding file opening overheads
+### Avoiding file opening overheads: iterative vs map-style datasets
 
-The issue with pytorch's default ImageDataset/loader is that it opens each
+The issue with PyTorch's default ImageDataset/loader is that it opens each
 image file individually. This induces 2 kinds of overheads at evevery opening:
 
-1. The system (more precisely, the harddrive reading head) must find the
+1. The system needs to check access permissions/rights for every new image.
+2. The system (actually, the harddrive reading head) must move to the
 beginning of the image file, which, on HDDs, can be slow.
-2. The system needs to check access permissions/rights for every new image.
 
-To avoid these overheads, this solution dumps all imagenet images into one
-file (actually 2: one for the training set, one for the validation), using an
-LMDB format.
-
-#### Iterative vs key-based data-loaders
-
-One advantage of LMDB files is that they can be accessed either
-sequentially/iteratively, or via key-value mappings (i.e., each key maps to one
-image, using a dictionnary data-structure). Hence, you need to check access
-rights only once (when opening the lmdb file), i.e., the overhead related to 2.
-disappears. If you decide to load the data sequentially, then the overhead
-related to 1. disappears as well; but then, you data does not get shuffled,
-which is generally a good idea in deep learning. This solution is implemented
-in `uint_lmdb_iterloader.py`. Instead, you can also access the images by the
-(shuffled) keys, but then, of course, you keep the overhead related to 1. This
-is implemented in `uint_lmdb_loader.py`.
-
-_Remark_: These loaders were initially written for the cluster of the
-Max-Planck-Institute for Intelligent Systems. Because of its specific cluster
-architecture, the huge overhead was related to point 2, but not to 1. So,
-there, I recommend using the `uint_lmdb_loader.py`.
+By putting all files into one LMDB file, we avoid the overhead related to 1.
+By reading them in sequence (i.e., in the order on the disk), we avoid the
+overhead 2. Said differently, `LMDBDataset` avoids overhead 1.,
+`LMDBIterDataset` avoids both.
 
 #### JPEG vs np.array-of-uint files
 
