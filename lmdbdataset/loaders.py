@@ -50,13 +50,14 @@ class LMDBGetter(LMDBData):
 
 
 class LMDBDataset(Dataset):
-    def __init__(self, root, split='train', transform=None, 
+    '''
+        A map-style dataset that opens an LMDB file and randomly loads its
+        files/images using the LMDB's dictionnary/key-value based access.
+        Note that the LMDB file is opened only once.
+    '''
+
+    def __init__(self, root, split='train', transform=None,
                  transform_target=None, shuffle=None, imgtype='numpy',):
-        '''
-            A map-style dataset that opens an LMDB file and randomly loads its
-            files/images using the LMDB's dictionnary/key-value based access.
-            Note that the LMDB file is opened only once.
-        '''
         super(LMDBDataset, self).__init__()
         fname = 'train.lmdb' if split == 'train' else 'val.lmdb'
         lmdb_path = os.path.join(root, fname)
@@ -105,8 +106,6 @@ class LMDBDataset(Dataset):
 
 
 class LMDBIterDataset(IterableDataset):
-    def __init__(self, root, split='train', transform=None,
-                 transform_target=None, imgtype='numpy',  # or 'jpeg'):
     '''
         An iterable dataset that opens an LMDB file and reads it in the order
         of its keys (which should be the order of storage). If multiple workers
@@ -114,7 +113,10 @@ class LMDBIterDataset(IterableDataset):
 
         Argument split should be 'train' or 'val'.
     '''
-    # based on timm's ImageDataset
+
+    def __init__(self, root, split='train', transform=None,
+                 transform_target=None, imgtype='numpy',):  # or 'jpeg'):
+        # based on timm's ImageDataset
         super(LMDBIterDataset, self).__init__()
         fname = 'train.lmdb' if split == 'train' else 'val.lmdb'
         lmdb_path = os.path.join(root, fname)
@@ -175,12 +177,13 @@ class LMDBIterDataset(IterableDataset):
 
 
 class SafeBuffer(object):
-    def __init__(self, buffer_size: int, num_workers: int):
     '''
         This class provides a thread-safe buffer to be used by the
         `BufferedDataLoader`, which will pass this buffer to every of its
         workers (the dataset-loading sub-processes).
     '''
+
+    def __init__(self, buffer_size: int, num_workers: int):
         self._list = []
         self._lock = Lock()
         self._buffer_size = buffer_size
@@ -287,8 +290,6 @@ class BufferedDataset(IterableDataset):
 
 
 class BufferedDataLoader(DataLoader):
-    def __init__(self, buffer_size, dataset, batch_size, persistent_buffer=True,
-                 num_workers=0, **kwargs):
     '''
     This dataloader wraps and sub-classes the usual PyTorch DataLoader and is
     intended for use with an iterable dataset where each worker has access to a
@@ -353,6 +354,9 @@ class BufferedDataLoader(DataLoader):
     shuffled data from 1 worker each, whereas our BufferedDataLoader contains
     and shuffles data accross all the workers.
     '''
+
+    def __init__(self, buffer_size, dataset, batch_size, persistent_buffer=True,
+                 num_workers=0, **kwargs):
         if 'persistent_workers' not in kwargs:
             kwargs['persistent_workers'] = persistent_buffer
         if persistent_buffer and (not kwargs['persistent_workers']):
@@ -464,6 +468,7 @@ class BufferedDataLoader_old(object):
     contain shuffled data from 1 worker each, whereas our BufferedDataLoader
     contains and shuffles data accross all the workers.
     '''
+
     def __init__(
             self, buffer_size, dataset, batch_size,
             persistent_buffer=True, drop_last=False, **loader_kwargs):
