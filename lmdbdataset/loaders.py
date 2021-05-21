@@ -84,8 +84,12 @@ class LMDBDataset(Dataset):
         if self.imgtype == 'numpy':
             img = torch.tensor(img)
         elif self.imgtype == 'jpeg':
-            # img = cv2.imdecode(img, cv2.IMREAD_COLOR)
-            img = np.asarray(Image.open(BytesIO(img)).convert('RGB'))
+            # np.asarray does not copy the underlying data. But this PyTorch
+            # throws a long warning, because PIL.Image apparently returns
+            # non-writable arrays. Anyway, using np.array has no noticeable
+            # performance decrease.
+            # img = np.asarray(Image.open(BytesIO(img)).convert('RGB'))
+            img = np.array(Image.open(BytesIO(img)).convert('RGB'))
             img = torch.tensor(img).permute(2,0,1).contiguous()
         else:
             ValueError('imgtype must be jpeg or numpy')
@@ -155,8 +159,12 @@ class LMDBIterDataset(IterableDataset):
             if self.imgtype == 'numpy':
                 img = torch.tensor(img)
             elif self.imgtype == 'jpeg':
-                # img = cv2.imdecode(img, cv2.IMREAD_COLOR)
-                img = np.asarray(Image.open(BytesIO(img)).convert('RGB'))
+                # np.asarray does not copy the underlying data. But this
+                # PyTorch throws a long warning, because PIL.Image apparently
+                # returns non-writable arrays. Anyway, using np.array has no
+                # noticeable performance decrease.
+                # img = np.asarray(Image.open(BytesIO(img)).convert('RGB'))
+                img = np.array(Image.open(BytesIO(img)).convert('RGB'))
                 img = torch.tensor(img).permute(2,0,1).contiguous()
             else:
                 ValueError('imgtype must be jpeg or numpy')
