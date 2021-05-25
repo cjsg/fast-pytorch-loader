@@ -363,7 +363,7 @@ class BufferedDataLoader(DataLoader):
     and shuffles data accross all the workers.
     '''
 
-    def __init__(self, buffer_size, dataset, batch_size, persistent_buffer=True,
+    def __init__(self, dataset, buffer_size, batch_size, persistent_buffer=True,
                  num_workers=0, **kwargs):
         if 'persistent_workers' not in kwargs:
             kwargs['persistent_workers'] = persistent_buffer
@@ -478,7 +478,7 @@ class BufferedDataLoader_old(object):
     '''
 
     def __init__(
-            self, buffer_size, dataset, batch_size,
+            self, dataset, buffer_size, batch_size,
             persistent_buffer=True, drop_last=False, **loader_kwargs):
         # loader_kwargs should not contain the dataset, batch_size, drop_last
         # and collate_fn argument
