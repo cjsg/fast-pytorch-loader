@@ -54,18 +54,31 @@ class LMDBDataset(Dataset):
         A map-style dataset that opens an LMDB file and randomly loads its
         files/images using the LMDB's dictionnary/key-value based access.
         Note that the LMDB file is opened only once.
+
+    Arguments
+    ---------
+        root (str)  Path to LMDB dataset folder (should contain train.lmdb and
+            val.lmdb
+        split (str) Must be 'train' or 'val'
+        img_type (str)  'numpy' or 'jpeg'. Should be the same than argument
+            used in create_lmdb(.) function
+        return_type (str)   'jpeg', 'numpy' or 'torch'. If 'jpeg',
+            then img_type must also be 'jpeg'
     '''
 
     def __init__(self, root, split='train', transform=None,
-                 transform_target=None, shuffle=None, imgtype='numpy',):
+                 transform_target=None, shuffle=None, img_type='numpy', return_type='torch',):
         super(LMDBDataset, self).__init__()
         fname = 'train.lmdb' if split == 'train' else 'val.lmdb'
-        lmdb_path = os.path.join(root, fname)
+        lmdb_path = os.path.expanduser(os.path.join(root, fname))
         self.lmdb_path = lmdb_path
         assert os.path.exists(self.lmdb_path), f'Non existing path {self.lmdb_path}'
 
-        assert imgtype in ['numpy', 'jpeg'], f'Unknonwn imgtype {imgtype}'
-        self.imgtype = imgtype
+        assert img_type in ['numpy', 'jpeg'], f'Unknonwn img_type {img_type}'
+        if return_type == 'jpeg' and img_type == 'numpy':
+            raise ValueError(f"return_type {return_type} incompatible with img_type 'numpy'. Use return_type 'torch'")
+        self.img_type = img_type
+        self.return_type = return_type
 
         shuffle = (split=='train') if shuffle is None else shuffle
 
@@ -81,19 +94,23 @@ class LMDBDataset(Dataset):
             self._initialized_worker = True
         # img, target = self.getter.__getitem__(ix)
         img, target = self.getter[ix]
-        if self.imgtype == 'numpy':
+        if self.img_type == 'numpy':
             img = torch.tensor(img)
-        elif self.imgtype == 'jpeg':
+        elif self.img_type == 'jpeg':
             # np.asarray does not copy the underlying data. But this PyTorch
             # throws a long warning, because PIL.Image apparently returns
             # non-writable arrays. Anyway, using np.array has no noticeable
             # performance decrease.
             # img = np.asarray(Image.open(BytesIO(img)).convert('RGB'))
-            img = np.array(Image.open(BytesIO(img)).convert('RGB'))
-            img = torch.tensor(img).permute(2,0,1).contiguous()
+            img = Image.open(BytesIO(img)).convert('RGB')
+            if self.return_type in {'numpy','torch'}:
+                img = np.array(img)
+                img = np.rollaxis(img, 2)  # HWC to CHW
         else:
-            ValueError('imgtype must be jpeg or numpy')
-        target = torch.tensor(target)
+            ValueError('img_type must be jpeg or numpy')
+        if self.return_type == 'torch':
+            img = torch.tensor(img).contiguous()
+            target = torch.tensor(target)
         if self.transform is not None:
             img = self.transform(img)
         if target is None:
@@ -115,20 +132,31 @@ class LMDBIterDataset(IterableDataset):
         of its keys (which should be the order of storage). If multiple workers
         are used, each worker gets a different chunk of the dataset.
 
-        Argument split should be 'train' or 'val'.
+    Arguments
+    ---------
+        root (str)  Path to LMDB dataset folder (should contain train.lmdb and
+            val.lmdb
+        split (str) Must be 'train' or 'val'
+        img_type (str)  'numpy' or 'jpeg'. Should be the same than argument
+            used in create_lmdb(.) function
+        return_type (str)   'jpeg', 'numpy' or 'torch'. If 'jpeg',
+            then img_type must also be 'jpeg'
     '''
 
     def __init__(self, root, split='train', transform=None,
-                 transform_target=None, imgtype='numpy',):  # or 'jpeg'):
+                 transform_target=None, img_type='numpy', return_type='torch'):  # or 'jpeg'):
         # based on timm's ImageDataset
         super(LMDBIterDataset, self).__init__()
         fname = 'train.lmdb' if split == 'train' else 'val.lmdb'
-        lmdb_path = os.path.join(root, fname)
+        lmdb_path = os.path.expanduser(os.path.join(root, fname))
         self.lmdb_path = lmdb_path
         assert os.path.exists(self.lmdb_path), f'Non existing path {self.lmdb_path}'
 
-        assert imgtype in ['numpy', 'jpeg'], f'Unknonwn imgtype {imgtype}'
-        self.imgtype = imgtype
+        assert img_type in ['numpy', 'jpeg'], f'Unknonwn img_type {img_type}'
+        if return_type == 'jpeg' and img_type == 'numpy':
+            raise ValueError(f"return_type {return_type} incompatible with img_type 'numpy'. Use return_type 'torch'")
+        self.img_type = img_type
+        self.return_type = return_type
 
         self.getter = LMDBGetter(self.lmdb_path, shuffle=False)
         # Alternatively: LMDBSerializer.load(self.root, shuffle=False)
@@ -156,19 +184,25 @@ class LMDBIterDataset(IterableDataset):
         if not self._initialized_worker:
             self.initialize_worker()
         for img, target in self.getter:
-            if self.imgtype == 'numpy':
-                img = torch.tensor(img)
-            elif self.imgtype == 'jpeg':
+            # if self.img_type == 'numpy':
+            #     img = torch.tensor(img)
+            if self.img_type == 'jpeg':
                 # np.asarray does not copy the underlying data. But this
                 # PyTorch throws a long warning, because PIL.Image apparently
                 # returns non-writable arrays. Anyway, using np.array has no
                 # noticeable performance decrease.
                 # img = np.asarray(Image.open(BytesIO(img)).convert('RGB'))
-                img = np.array(Image.open(BytesIO(img)).convert('RGB'))
-                img = torch.tensor(img).permute(2,0,1).contiguous()
+                # img = np.array(img)
+                # img = torch.tensor(img).permute(2, 0, 1).contiguous()
+                img = Image.open(BytesIO(img)).convert('RGB')
+                if self.return_type in {'numpy','torch'}:
+                    img = np.array(img)
+                    img = np.rollaxis(img, 2)  # HWC to CHW
             else:
-                ValueError('imgtype must be jpeg or numpy')
-            target = torch.tensor(target)
+                ValueError('img_type must be jpeg or numpy')
+            if self.return_type == 'torch':
+                img = torch.tensor(img).contiguous()
+                target = torch.tensor(target)
             if self.transform is not None:
                 img = self.transform(img)
             if target is None:
