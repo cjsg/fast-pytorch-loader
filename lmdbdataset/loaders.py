@@ -175,7 +175,7 @@ class LMDBIterDataset(IterableDataset):
         self._distributed = distributed
         if self._distributed is None:
             self._distributed = (rank is not None) or (
-                (world_size is not None) and world_size > 1))
+                (world_size is not None) and world_size > 1)
         self._rank = rank
         self._world_size = world_size
         self._initialized_rank_and_worker = False
