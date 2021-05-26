@@ -1,4 +1,5 @@
 import os
+import logging
 from pickle import loads
 from io import BytesIO
 from PIL import Image
@@ -17,6 +18,7 @@ try:
 except ImportError:
     from tensorpack.dataflow import LMDBData
 
+_logger = logging.getLogger('loader')
 
 class LMDBGetter(LMDBData):
     '''
@@ -176,30 +178,34 @@ class LMDBIterDataset(IterableDataset):
         if self._distributed is None:
             self._distributed = (rank is not None) or (
                 (world_size is not None) and world_size > 1)
-        self._rank = rank
-        self._world_size = world_size
-        self._initialized_rank_and_worker = False
 
-    def initialize_rank_and_worker(self):
-        '''
-            When loading this iterative dataset with multiple workers, then
-            each worker gets a different chunk of the dataset to load, and
-            loads it sequentially.
-        '''
-        self.getter.reset_state()
-        
+        # Contrary to workers which get initialized by the dataloader, the rank
+        # is already defined at initialization of the dataset. Hence, we define
+        # the rank here (which is usefull for the dataloader to get the correct
+        # dataset length) and initialize the worker specific parameters in the
+        # first iteration __iter__
+        self.initialize_rank(rank, world_size)
+        self._initialized_worker = False
+
+    def initialize_rank(self, rank, world_size):
         # Determine _rank_start / _rank_end
         if self._distributed:
-            if self._rank is None:
-                self._rank = dist.get_rank()
-            if self._world_size is None:
-                self._world_size = dist.get_world_size()
+            self._rank = dist.get_rank() if rank is None else rank
+            self._world_size = dist.get_world_size() if world_size is None else world_size
             per_rank = int(np.ceil((self.getter._end - self.getter._start) / float(self._world_size)))
             self.getter._rank_start = self.getter._start + self._rank * per_rank
             self.getter._rank_end = min(self.getter._rank_start + per_rank, self.getter._end)
         else:
             self._rank = 0
             self._world_size = 1
+
+    def initialize_worker(self):
+        '''
+            When loading this iterative dataset with multiple workers, then
+            each worker gets a different chunk of the dataset to load, and
+            loads it sequentially.
+        '''
+        self.getter.reset_state()
 
         # Determine _worker_start / _worker_end in the current rank/process
         worker_info = get_worker_info()
@@ -208,26 +214,29 @@ class LMDBIterDataset(IterableDataset):
             worker_id = worker_info.id
             self.getter._worker_start = self.getter._rank_start + worker_id * per_worker
             self.getter._worker_end = min(self.getter._worker_start + per_worker, self.getter._rank_end)
-            print(f"Initialized worker {worker_id} in rank {self._rank}.\t Start: {self.getter._worker_start}\t End: {self.getter._worker_end}\n")
+            _logger.debug(
+                f"Initialized worker {worker_id} in rank {self._rank}.\t"
+                f"Start: {self.getter._worker_start}\t"
+                f"End: {self.getter._worker_end}")
 
-        self._initialized_rank_and_worker = True
+        self._initialized_worker = True
 
     def __iter__(self):
-        if not self._initialized_rank_and_worker:
-            self.initialize_rank_and_worker()
+        if not self._initialized_worker:
+            self.initialize_worker()
         for img, target in self.getter:
             # if self.img_type == 'numpy':
             #     img = torch.tensor(img)
             if self.img_type == 'jpeg':
-                # np.asarray does not copy the underlying data. But this
-                # PyTorch throws a long warning, because PIL.Image apparently
-                # returns non-writable arrays. Anyway, using np.array has no
-                # noticeable performance decrease.
                 # img = np.asarray(Image.open(BytesIO(img)).convert('RGB'))
                 # img = np.array(img)
                 # img = torch.tensor(img).permute(2, 0, 1).contiguous()
                 img = Image.open(BytesIO(img)).convert('RGB')
                 if self.return_type in {'numpy','torch'}:
+                    # img = np.asarray(img) would be better, but bc it doesn't
+                    # copy the tensor data. But Image returns an img that is
+                    # read-only, so that torch trows an anooying warning.
+                    # np.array doesn't seem slower.
                     img = np.array(img)
                     img = np.rollaxis(img, 2)  # HWC to CHW
             else:
@@ -244,9 +253,15 @@ class LMDBIterDataset(IterableDataset):
             yield img, target
 
     def __len__(self):
+        # returns the length of the chunk seen by this process
+        return self.getter._rank_end - self.getter._rank_start
+
+    def full_length(self):
+        # returns the full length of the dataset
         return self.getter._end - self.getter._start
 
     def worker_len(self):
+        # returns the length of the chunk seen by this worker
         return self.getter._worker_end - self.getter._worker_start
 
 
@@ -264,6 +279,7 @@ class SafeBuffer(object):
         self._num_workers = num_workers
         self._num_workers_done_looping = 0
         self._ixs = []
+        _logger.debug('Created safe buffer. There should be 1 buffer per dataloader.')  
 
     def append(self, x):
         self._lock.acquire()
@@ -456,6 +472,7 @@ class BufferedDataLoader(DataLoader):
         self.buffer.reset()
         for data in super(BufferedDataLoader, self).__iter__():
             yield data
+
 
 def list_collate_fn(l):
     # this must be declared at the top level when used on MacOS or Windows with
