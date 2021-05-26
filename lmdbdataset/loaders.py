@@ -151,6 +151,10 @@ class LMDBIterDataset(IterableDataset):
             retrieved from the rand in the current group.
         world_size (int) Number of processes, when using multiple processes. If
             None, world_size will be retrieved from the current group.
+
+    NB: LMDBDataset has no handling for distributed processes, because for
+    map-style datasets, the distribution of idx accross processes should be
+    handled by passing PyTorch's DistributedSampler to the DataLoader.
     '''
 
     def __init__(self, root, split='train', transform=None,
