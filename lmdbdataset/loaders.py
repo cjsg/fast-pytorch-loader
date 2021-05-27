@@ -10,7 +10,7 @@ from torch.utils.data import get_worker_info, Dataset, IterableDataset, DataLoad
 from torch.utils.data.dataloader import default_collate
 import torch.distributed as dist
 
-from .utils import LMDBData
+from .dataflow import LMDBData
 
 # try:
 #     from dataflow import LMDBData  # only tensorpack.dataflow needed

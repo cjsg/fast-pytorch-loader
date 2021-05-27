@@ -13,6 +13,9 @@ import six
 import numpy as np
 import os
 import logging
+import lmdb
+from contextlib import contextmanager
+from datetime import datetime
 
 # from ..utils import logger
 # from ..utils.serialize import loads
@@ -23,10 +26,12 @@ from pickle import loads
 
 # __all__ = ['HDF5Data', 'LMDBData', 'LMDBDataDecoder', 'CaffeLMDB', 'SVMLightData']
 
-logger = logging.Logger()
+logger = logging.Logger('dataflow')
 
 
 ## Copied from dataflow.utils
+
+_RNG_SEED = None
 
 def get_rng(obj=None):
     """
@@ -71,7 +76,7 @@ def get_tqdm_kwargs(**kwargs):
     return default
 
 
-[docs]def get_tqdm(*args, **kwargs):
+def get_tqdm(*args, **kwargs):
     """ Similar to :func:`tqdm.tqdm()`,
     but use tensorpack's default options to have consistent style. """
     return tqdm(*args, **get_tqdm_kwargs(**kwargs))
