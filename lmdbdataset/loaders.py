@@ -270,327 +270,13 @@ class LMDBIterDataset(IterableDataset):
         return self.getter._worker_end - self.getter._worker_start
 
 
-# class SafeBuffer(object):
-#     '''
-#         This class provides a thread-safe buffer to be used by the
-#         `BufferedDataLoader`, which will pass this buffer to every of its
-#         workers (the dataset-loading sub-processes).
-#     '''
-#
-#     def __init__(self, buffer_size: int, num_workers: int):
-#         self._list = mp.Queue()
-#         self._len = mp.Value('i', 0)
-#         self._buffer_size = buffer_size
-#         self._num_workers = num_workers
-#         self._num_workers_done_looping = mp.Value('i', 0)
-#         self._ixs = []
-#         _logger.debug('Created safe buffer. There should be 1 buffer per dataloader.')
-#
-#     def append(self, x):
-#         self._list.put(x)
-#         with self._len.get_lock():
-#             self._len.value += 1
-#             worker_id = get_worker_info().id
-#             print(f'length {len(self)}; length-value-ide {id(self._len)}; '
-#                   f'worker_id {worker_id}')
-#
-#     def pop(self):
-#         x = self.get()
-#         with self._len.get_lock():
-#             self._len.value -= 1
-#         return x
-#
-#     def random_get_and_replace(self, x):
-#         with self._len.get_lock():
-#             self._list.put(x)
-#             return self._list.get()
-#
-#     @property
-#     def all_workers_done(self):
-#         return (self._num_workers_done_looping.value >= self._num_workers)
-#
-#     def send_done_looping(self):
-#         with self._num_workers_done_looping.get_lock():
-#             self._num_workers_done_looping.value += 1
-#             # if self._num_workers_done_looping.value == self._num_workers:
-#             #     random.shuffle(self._list)
-#
-#     def reset(self):
-#         self._num_workers_done_looping.value = 0
-#         ## do not reset the list/queue
-#
-#     def __len__(self):
-#         return self._len.value
-
-class SafeBuffer(object):
-    '''
-        This class provides a thread-safe buffer to be used by the
-        `BufferedDataLoader`, which will pass this buffer to every of its
-        workers (the dataset-loading sub-processes).
-    '''
-
-    def __init__(self, buffer_size: int, num_workers: int):
-        manager = mp.Manager()
-        self._list = manager.list()
-        self._lock = manager.Lock()
-        self._buffer_size = buffer_size
-        self._num_workers = num_workers
-        self._num_workers_done_looping = mp.Value('i', 0)
-        self._ixs = []
-        _logger.debug('Created safe buffer. There should be 1 buffer per dataloader.')
-
-    def append(self, x):
-        self._list.append(x)
-
-    def pop(self):
-        return self._list.pop()
-
-    def random_get_and_replace(self, x):
-        self._lock.acquire()
-        ix = self.sample_random_ix()
-        out = self._list[ix]
-        self._list[ix] = x
-        self._lock.release()
-        return out
-
-    def sample_random_ix(self):
-        if len(self._ixs) == 0:
-            self._ixs = torch.randint(high=len(self), size=(100,),
-                                      dtype=torch.int64).tolist()
-        return self._ixs.pop()
-
-    @property
-    def all_workers_done(self):
-        return (self._num_workers_done_looping.value >= self._num_workers)
-
-    def send_done_looping(self):
-        with self._num_workers_done_looping.get_lock():
-            self._num_workers_done_looping.value += 1
-            if self._num_workers_done_looping == self._num_workers:
-                random.shuffle(self._list)
-
-    def reset(self):
-        self._num_workers_done_looping.value = 0
-
-    def __len__(self):
-        return len(self._list)
-
-# class SafeBuffer(object):
-#     '''
-#         This class provides a thread-safe buffer to be used by the
-#         `BufferedDataLoader`, which will pass this buffer to every of its
-#         workers (the dataset-loading sub-processes).
-#     '''
-#
-#     def __init__(self, buffer_size: int, num_workers: int):
-#         self._list = []
-#         self._lock = Lock()
-#         self._buffer_size = buffer_size
-#         self._num_workers = num_workers
-#         self._num_workers_done_looping = 0
-#         self._ixs = []
-#         _logger.debug('Created safe buffer. There should be 1 buffer per dataloader.')
-#
-#     def append(self, x):
-#         self._lock.acquire()
-#         self._list.append(x)
-#         print('id', id(self._list), 'length', len(self._list))
-#         self._lock.release()
-#
-#     def pop(self):
-#         self._lock.aquire()
-#         x = self._list.pop()
-#         self._lock.release()
-#         return x
-#
-#     def random_get_and_replace(self, x):
-#         self._lock.acquire()
-#         ix = self.sample_random_ix()
-#         out = self._list[ix]
-#         self._list[ix] = x
-#         self._lock.release()
-#         return out
-#
-#     def sample_random_ix(self):
-#         if len(self._ixs) == 0:
-#             self._ixs = torch.randint(high=len(self), size=(100,),
-#                                       dtype=torch.int64).tolist()
-#         return self._ixs.pop()
-#
-#     @property
-#     def all_workers_done(self):
-#         return (self._num_workers_done_looping >= self._num_workers)
-#
-#     def send_done_looping(self):
-#         self._lock.acquire()
-#         self._num_workers_done_looping += 1
-#         if self._num_workers_done_looping == self._num_workers:
-#             random.shuffle(self._list)
-#         self._lock.release()
-#
-#     def reset(self):
-#         self._num_workers_done_looping = 0
-#
-#     def __len__(self):
-#         return len(self._list)
-
-class BufferedDataset(IterableDataset):
-    '''
-        This class is a wrapper for iterable datasets that is used by the
-        BufferedDataLoader to handle access to a joint buffer between
-        different workers.
-    '''
-    def __init__(self, dataset):
-        super(BufferedDataset, self).__init__()
-        self.dataset = dataset
-        self._initialized_buffer = False
-        self._iterdataset = None
-
-    def initialize_buffer(self, buffered_dataloader): # buf, buffer_size, persistent_buffer):
-        # The buffer comes from the loader and is the same for all workers
-        self._buffer = buffered_dataloader.buffer
-        self._buffer_size = buffered_dataloader.buffer_size
-        self._persistent_buffer = buffered_dataloader.persistent_buffer
-        self._initialized_buffer = True
-
-    def __iter__(self):
-        if not self._initialized_buffer:
-            raise RuntimeError('Buffer or BufferedDataset have not been initialized')
-        ixs, n = [], 0
-        if self._iterdataset is None:
-            self._iterdataset = iter(self.dataset)
-        worker_info = get_worker_info()
-        worker_id = None if worker_info is None else worker_info.id
-        while n < self.dataset.worker_len():
-            try:
-                x = next(self._iterdataset)
-            except StopIteration:
-                if self._persistent_buffer:
-                    # Continue loop
-                    self._iterdataset = iter(self.dataset)
-                    x = next(self._iterdataset)
-                else:
-                    # Stop loading data and start popping data from the buffer
-                    break
-            if len(self._buffer) == self._buffer_size:
-                n += 1
-                yield self._buffer.random_get_and_replace(x)
-            else:
-                self._buffer.append(x)
-
-        self._buffer.send_done_looping()
-        if not self._persistent_buffer:
-            while not self._buffer.all_workers_done:
-                sleep(.1)
-            while len(self._buffer) > 0:
-                yield self._buffer.pop()
-
-    def __len__(self):
-        return len(self.dataset)
-
-
-class BufferedDataLoader(DataLoader):
-    '''
-    This dataloader wraps and sub-classes the usual PyTorch DataLoader and is
-    intended for use with an iterable dataset where each worker has access to a
-    different chunk of the data. Each worker loads a new datapoint form the
-    disc and exchanges it with a random point from the buffer of the
-    BufferedDataLoader.
-
-    Args
-    ----
-        buffer_size (int)   The total buffer size (1 buffer for all workers)
-
-        dataset (Dataset)   Typically an iterable dataset where each worker
-            accesses a different chunk of the dataset. This dataset must
-            implement the __len__ method.
-
-        batch_size (int)    The output batch_size. This is also the batch_size
-            used by the workers to import/read the data (see section 'Workflow
-            of self.__iter__ below)
-
-        persistent_buffer (bool)
-            Since the first datapoints loaded by the worker only serve to fill
-            the buffer, the workers will have finished their loop over the
-            dataset before the dataloader has actually returned `len(dataset)`
-            datapoints (actually `len(dataloader)` batches), i.e., it has not
-            finished its 'epoch'. The `persistent_buffer` key says how it
-            should finish that epoch: either by stopping the workers and
-            popping data from the buffer until its empty (False); or by letting
-            the workers start a new loop over the dataset and proceeding with
-            the sample-and-replace process in the buffer as before. That way,
-            the buffer will not need to get filled from scratch again in the
-            next epoch. If `persistent_workers` is True, then, in the next
-            epoch, the workers will resume their loop over the dataset from
-            wherever they finished in the previous epoch.
-
-        drop_last (bool)    Whether or not to drop the last incomplete batch.
-            Irrelevant when `persistent_buffer` is True.
-            (Remark: since each worker loads data in batches but only gets
-            access to a specific subset of the data, the last batch from each
-            worker may contain less than `batch_size` points.  However, these
-            points get all passed separately to the global buffer. The actual
-            output batches are constructed from this buffer, so that it's
-            really only the last output batch for which this drop_last option
-            is relevant.)
-
-        **loader_args   Named arguments. Can be any of the arguments of the
-            usual torch.utils.data.DataLoader.
-
-    Comparison with torch.utils.data.BufferedShuffleDataset:
-    --------------------------------------------------------
-
-    PyTorch 1.8.1 provides a BufferedShuffleDataset that can f.ex. be called as
-    follows:
-        ```
-        unshuffled_dataset = LMDBIterDataset(...)
-        shuffled_dataset = BufferedShuffleDataset(unshuffled_dataset, buffer_size)
-        dataloader = torch.utils.data.DataLoader(shuffled_dataset, num_workers, ...)
-        ```
-    Here, `shuffled_dataset` gets cloned in every worker (not
-    `unshuffled_dataset` as in our BufferedDataLoader). That means that the
-    buffer is specific to each worker, and contains / shuffles only the data
-    loaded by that specific worker. I.e., the output batches will only contain
-    shuffled data from 1 worker each, whereas our BufferedDataLoader contains
-    and shuffles data accross all the workers.
-    '''
-
-    def __init__(self, dataset, buffer_size, batch_size, persistent_buffer=True,
-                 num_workers=0, **kwargs):
-        if 'persistent_workers' not in kwargs:
-            kwargs['persistent_workers'] = persistent_buffer
-        if persistent_buffer and (not kwargs['persistent_workers']):
-            warnings.warn(
-                'persistent_buffer is True but not `persistent_workers`. This may '
-                'lead to duplicates. I recommend to make `persistent_worker` True '
-                'if persistent_buffer is True')
-
-        if 'shuffle' in kwargs and kwargs['shuffle'] == False:
-            raise ValueError(f'You are using a BufferedDataLoader but passed argument shuffle=False.')
-
-        self.buffer_size = min(len(dataset), buffer_size)
-        self.persistent_buffer = True
-        self.buffer = SafeBuffer(self.buffer_size, num_workers)
-        self.dataset = BufferedDataset(dataset)
-
-        super(BufferedDataLoader, self).__init__(
-            self.dataset, batch_size=batch_size, num_workers=num_workers, **kwargs)
-
-        self.dataset.initialize_buffer(self)
-
-    def __iter__(self):
-        self.buffer.reset()
-        for data in super(BufferedDataLoader, self).__iter__():
-            yield data
-
-
 def list_collate_fn(l):
     # this must be declared at the top level when used on MacOS or Windows with
     # several workers (because of the way the spawning of new workers work)
     # See https://pytorch.org/docs/stable/data.html#platform-specific-behaviors
     return l
 
-class BufferedDataLoader_old(object):
+class BufferedDataLoader(object):
     '''
     This dataloader wraps the usual torch.utils.data.DataLoader, which is
     accessed internally stored in and accessed via self.loader. 
@@ -755,3 +441,224 @@ class BufferedDataLoader_old(object):
 
     def __len__(self):
         return len(self.loader)
+
+
+##############################################################
+### ALTERNATIVE BUFFERED DATALOADER USING A SHARED BUFFER ####
+##############################################################
+
+'''
+    In the rest of this file, we implement an alterantive BufferedDataLoader,
+    which uses a shared buffer. Each worker loads data, samples a random idx of
+    that buffer and swaps its data with the data contained at that idx. That
+    way, the worker can also do the batching (collation of data-points into
+    batches), which, in the implementatino above is handled by the main
+    program. However, this requires additionnal communication time, which, in
+    the end, makes this slower than the implementation above. Also, it doesn't
+    seem to work when using PyTorch's DistributedParallel.
+'''
+
+class SafeBuffer(object):
+    '''
+        This class provides a thread-safe buffer to be used by the
+        `BufferedDataLoader`, which will pass this buffer to every of its
+        workers (the dataset-loading sub-processes).
+    '''
+
+    def __init__(self, buffer_size: int, num_workers: int):
+        manager = mp.Manager()
+        self._list = manager.list()
+        self._lock = manager.Lock()
+        self._buffer_size = buffer_size
+        self._num_workers = num_workers
+        self._num_workers_done_looping = mp.Value('i', 0)
+        self._ixs = []
+        _logger.debug('Created safe buffer. There should be 1 buffer per dataloader.')
+
+    def append(self, x):
+        self._list.append(x)
+
+    def pop(self):
+        return self._list.pop()
+
+    def random_get_and_replace(self, x):
+        self._lock.acquire()
+        ix = self.sample_random_ix()
+        out = self._list[ix]
+        self._list[ix] = x
+        self._lock.release()
+        return out
+
+    def sample_random_ix(self):
+        if len(self._ixs) == 0:
+            self._ixs = torch.randint(high=len(self), size=(100,),
+                                      dtype=torch.int64).tolist()
+        return self._ixs.pop()
+
+    @property
+    def all_workers_done(self):
+        return (self._num_workers_done_looping.value >= self._num_workers)
+
+    def send_done_looping(self):
+        with self._num_workers_done_looping.get_lock():
+            self._num_workers_done_looping.value += 1
+            if self._num_workers_done_looping == self._num_workers:
+                random.shuffle(self._list)
+
+    def reset(self):
+        self._num_workers_done_looping.value = 0
+
+    def __len__(self):
+        return len(self._list)
+
+
+class BufferedDataset(IterableDataset):
+    '''
+        This class is a wrapper for iterable datasets that is used by the
+        BufferedDataLoader to handle access to a joint buffer between
+        different workers.
+    '''
+    def __init__(self, dataset):
+        super(BufferedDataset, self).__init__()
+        self.dataset = dataset
+        self._initialized_buffer = False
+        self._iterdataset = None
+
+    def initialize_buffer(self, buffered_dataloader): # buf, buffer_size, persistent_buffer):
+        # The buffer comes from the loader and is the same for all workers
+        self._buffer = buffered_dataloader.buffer
+        self._buffer_size = buffered_dataloader.buffer_size
+        self._persistent_buffer = buffered_dataloader.persistent_buffer
+        self._initialized_buffer = True
+
+    def __iter__(self):
+        if not self._initialized_buffer:
+            raise RuntimeError('Buffer or BufferedDataset have not been initialized')
+        ixs, n = [], 0
+        if self._iterdataset is None:
+            self._iterdataset = iter(self.dataset)
+        worker_info = get_worker_info()
+        worker_id = None if worker_info is None else worker_info.id
+        while n < self.dataset.worker_len():
+            try:
+                x = next(self._iterdataset)
+            except StopIteration:
+                if self._persistent_buffer:
+                    # Continue loop
+                    self._iterdataset = iter(self.dataset)
+                    x = next(self._iterdataset)
+                else:
+                    # Stop loading data and start popping data from the buffer
+                    break
+            if len(self._buffer) == self._buffer_size:
+                n += 1
+                yield self._buffer.random_get_and_replace(x)
+            else:
+                self._buffer.append(x)
+
+        self._buffer.send_done_looping()
+        if not self._persistent_buffer:
+            while not self._buffer.all_workers_done:
+                sleep(.1)
+            while len(self._buffer) > 0:
+                yield self._buffer.pop()
+
+    def __len__(self):
+        return len(self.dataset)
+
+
+class BufferedDataLoader2(DataLoader):
+    '''
+    This dataloader wraps and sub-classes the usual PyTorch DataLoader and is
+    intended for use with an iterable dataset where each worker has access to a
+    different chunk of the data. Each worker loads a new datapoint form the
+    disc and exchanges it with a random point from the buffer of the
+    BufferedDataLoader.
+
+    Args
+    ----
+        buffer_size (int)   The total buffer size (1 buffer for all workers)
+
+        dataset (Dataset)   Typically an iterable dataset where each worker
+            accesses a different chunk of the dataset. This dataset must
+            implement the __len__ method.
+
+        batch_size (int)    The output batch_size. This is also the batch_size
+            used by the workers to import/read the data (see section 'Workflow
+            of self.__iter__ below)
+
+        persistent_buffer (bool)
+            Since the first datapoints loaded by the worker only serve to fill
+            the buffer, the workers will have finished their loop over the
+            dataset before the dataloader has actually returned `len(dataset)`
+            datapoints (actually `len(dataloader)` batches), i.e., it has not
+            finished its 'epoch'. The `persistent_buffer` key says how it
+            should finish that epoch: either by stopping the workers and
+            popping data from the buffer until its empty (False); or by letting
+            the workers start a new loop over the dataset and proceeding with
+            the sample-and-replace process in the buffer as before. That way,
+            the buffer will not need to get filled from scratch again in the
+            next epoch. If `persistent_workers` is True, then, in the next
+            epoch, the workers will resume their loop over the dataset from
+            wherever they finished in the previous epoch.
+
+        drop_last (bool)    Whether or not to drop the last incomplete batch.
+            Irrelevant when `persistent_buffer` is True.
+            (Remark: since each worker loads data in batches but only gets
+            access to a specific subset of the data, the last batch from each
+            worker may contain less than `batch_size` points.  However, these
+            points get all passed separately to the global buffer. The actual
+            output batches are constructed from this buffer, so that it's
+            really only the last output batch for which this drop_last option
+            is relevant.)
+
+        **loader_args   Named arguments. Can be any of the arguments of the
+            usual torch.utils.data.DataLoader.
+
+    Comparison with torch.utils.data.BufferedShuffleDataset:
+    --------------------------------------------------------
+
+    PyTorch 1.8.1 provides a BufferedShuffleDataset that can f.ex. be called as
+    follows:
+        ```
+        unshuffled_dataset = LMDBIterDataset(...)
+        shuffled_dataset = BufferedShuffleDataset(unshuffled_dataset, buffer_size)
+        dataloader = torch.utils.data.DataLoader(shuffled_dataset, num_workers, ...)
+        ```
+    Here, `shuffled_dataset` gets cloned in every worker (not
+    `unshuffled_dataset` as in our BufferedDataLoader). That means that the
+    buffer is specific to each worker, and contains / shuffles only the data
+    loaded by that specific worker. I.e., the output batches will only contain
+    shuffled data from 1 worker each, whereas our BufferedDataLoader contains
+    and shuffles data accross all the workers.
+    '''
+
+    def __init__(self, dataset, buffer_size, batch_size, persistent_buffer=True,
+                 num_workers=0, **kwargs):
+        if 'persistent_workers' not in kwargs:
+            kwargs['persistent_workers'] = persistent_buffer
+        if persistent_buffer and (not kwargs['persistent_workers']):
+            warnings.warn(
+                'persistent_buffer is True but not `persistent_workers`. This may '
+                'lead to duplicates. I recommend to make `persistent_worker` True '
+                'if persistent_buffer is True')
+
+        if 'shuffle' in kwargs and kwargs['shuffle'] == False:
+            raise ValueError(f'You are using a BufferedDataLoader but passed argument shuffle=False.')
+
+        self.buffer_size = min(len(dataset), buffer_size)
+        self.persistent_buffer = True
+        self.buffer = SafeBuffer(self.buffer_size, num_workers)
+        self.dataset = BufferedDataset(dataset)
+
+        super(BufferedDataLoader, self).__init__(
+            self.dataset, batch_size=batch_size, num_workers=num_workers, **kwargs)
+
+        self.dataset.initialize_buffer(self)
+
+    def __iter__(self):
+        self.buffer.reset()
+        for data in super(BufferedDataLoader, self).__iter__():
+            yield data
+
+
