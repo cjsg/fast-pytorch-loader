@@ -10,10 +10,12 @@ from torch.utils.data import get_worker_info, Dataset, IterableDataset, DataLoad
 from torch.utils.data.dataloader import default_collate
 import torch.distributed as dist
 
-try:
-    from dataflow import LMDBData  # only tensorpack.dataflow needed
-except ImportError:
-    from tensorpack.dataflow import LMDBData
+from .utils import LMDBData
+
+# try:
+#     from dataflow import LMDBData  # only tensorpack.dataflow needed
+# except ImportError:
+#     from tensorpack.dataflow import LMDBData
 
 _logger = logging.getLogger('loader')
 
