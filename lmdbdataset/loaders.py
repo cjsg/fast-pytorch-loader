@@ -10,6 +10,7 @@ from torch.utils.data import Dataset, IterableDataset, get_worker_info, DataLoad
 from torch.utils.data.dataloader import default_collate
 import warnings
 from time import sleep
+import torch.multiprocessing as mp
 from torch.multiprocessing import Lock
 import torch.distributed as dist
 
@@ -269,6 +270,58 @@ class LMDBIterDataset(IterableDataset):
         return self.getter._worker_end - self.getter._worker_start
 
 
+# class SafeBuffer(object):
+#     '''
+#         This class provides a thread-safe buffer to be used by the
+#         `BufferedDataLoader`, which will pass this buffer to every of its
+#         workers (the dataset-loading sub-processes).
+#     '''
+#
+#     def __init__(self, buffer_size: int, num_workers: int):
+#         self._list = mp.Queue()
+#         self._len = mp.Value('i', 0)
+#         self._buffer_size = buffer_size
+#         self._num_workers = num_workers
+#         self._num_workers_done_looping = mp.Value('i', 0)
+#         self._ixs = []
+#         _logger.debug('Created safe buffer. There should be 1 buffer per dataloader.')
+#
+#     def append(self, x):
+#         self._list.put(x)
+#         with self._len.get_lock():
+#             self._len.value += 1
+#             worker_id = get_worker_info().id
+#             print(f'length {len(self)}; length-value-ide {id(self._len)}; '
+#                   f'worker_id {worker_id}')
+#
+#     def pop(self):
+#         x = self.get()
+#         with self._len.get_lock():
+#             self._len.value -= 1
+#         return x
+#
+#     def random_get_and_replace(self, x):
+#         with self._len.get_lock():
+#             self._list.put(x)
+#             return self._list.get()
+#
+#     @property
+#     def all_workers_done(self):
+#         return (self._num_workers_done_looping.value >= self._num_workers)
+#
+#     def send_done_looping(self):
+#         with self._num_workers_done_looping.get_lock():
+#             self._num_workers_done_looping.value += 1
+#             # if self._num_workers_done_looping.value == self._num_workers:
+#             #     random.shuffle(self._list)
+#
+#     def reset(self):
+#         self._num_workers_done_looping.value = 0
+#         ## do not reset the list/queue
+#
+#     def __len__(self):
+#         return self._len.value
+
 class SafeBuffer(object):
     '''
         This class provides a thread-safe buffer to be used by the
@@ -277,24 +330,20 @@ class SafeBuffer(object):
     '''
 
     def __init__(self, buffer_size: int, num_workers: int):
-        self._list = []
-        self._lock = Lock()
+        manager = mp.Manager()
+        self._list = manager.list()
+        self._lock = manager.Lock()
         self._buffer_size = buffer_size
         self._num_workers = num_workers
-        self._num_workers_done_looping = 0
+        self._num_workers_done_looping = mp.Value('i', 0)
         self._ixs = []
-        _logger.debug('Created safe buffer. There should be 1 buffer per dataloader.')  
+        _logger.debug('Created safe buffer. There should be 1 buffer per dataloader.')
 
     def append(self, x):
-        self._lock.acquire()
         self._list.append(x)
-        self._lock.release()
 
     def pop(self):
-        self._lock.aquire()
-        x = self._list.pop()
-        self._lock.release()
-        return x
+        return self._list.pop()
 
     def random_get_and_replace(self, x):
         self._lock.acquire()
@@ -312,21 +361,78 @@ class SafeBuffer(object):
 
     @property
     def all_workers_done(self):
-        return (self._num_workers_done_looping >= self._num_workers)
+        return (self._num_workers_done_looping.value >= self._num_workers)
 
     def send_done_looping(self):
-        self._lock.acquire()
-        self._num_workers_done_looping += 1
-        if self._num_workers_done_looping == self._num_workers:
-            random.shuffle(self._list)
-        self._lock.release()
+        with self._num_workers_done_looping.get_lock():
+            self._num_workers_done_looping.value += 1
+            if self._num_workers_done_looping == self._num_workers:
+                random.shuffle(self._list)
 
     def reset(self):
-        self._num_workers_done_looping = 0
+        self._num_workers_done_looping.value = 0
 
     def __len__(self):
         return len(self._list)
 
+# class SafeBuffer(object):
+#     '''
+#         This class provides a thread-safe buffer to be used by the
+#         `BufferedDataLoader`, which will pass this buffer to every of its
+#         workers (the dataset-loading sub-processes).
+#     '''
+#
+#     def __init__(self, buffer_size: int, num_workers: int):
+#         self._list = []
+#         self._lock = Lock()
+#         self._buffer_size = buffer_size
+#         self._num_workers = num_workers
+#         self._num_workers_done_looping = 0
+#         self._ixs = []
+#         _logger.debug('Created safe buffer. There should be 1 buffer per dataloader.')
+#
+#     def append(self, x):
+#         self._lock.acquire()
+#         self._list.append(x)
+#         print('id', id(self._list), 'length', len(self._list))
+#         self._lock.release()
+#
+#     def pop(self):
+#         self._lock.aquire()
+#         x = self._list.pop()
+#         self._lock.release()
+#         return x
+#
+#     def random_get_and_replace(self, x):
+#         self._lock.acquire()
+#         ix = self.sample_random_ix()
+#         out = self._list[ix]
+#         self._list[ix] = x
+#         self._lock.release()
+#         return out
+#
+#     def sample_random_ix(self):
+#         if len(self._ixs) == 0:
+#             self._ixs = torch.randint(high=len(self), size=(100,),
+#                                       dtype=torch.int64).tolist()
+#         return self._ixs.pop()
+#
+#     @property
+#     def all_workers_done(self):
+#         return (self._num_workers_done_looping >= self._num_workers)
+#
+#     def send_done_looping(self):
+#         self._lock.acquire()
+#         self._num_workers_done_looping += 1
+#         if self._num_workers_done_looping == self._num_workers:
+#             random.shuffle(self._list)
+#         self._lock.release()
+#
+#     def reset(self):
+#         self._num_workers_done_looping = 0
+#
+#     def __len__(self):
+#         return len(self._list)
 
 class BufferedDataset(IterableDataset):
     '''
