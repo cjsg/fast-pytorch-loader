@@ -276,7 +276,7 @@ def list_collate_fn(l):
     # See https://pytorch.org/docs/stable/data.html#platform-specific-behaviors
     return l
 
-class BufferedDataLoader(object):
+class BufferedDataLoader(DataLoader):
     '''
     This dataloader wraps the usual torch.utils.data.DataLoader, which is
     accessed internally stored in and accessed via self.loader. 
@@ -363,9 +363,9 @@ class BufferedDataLoader(object):
         # and collate_fn argument
         loader_collate_fn = list_collate_fn
         if 'collate_fn' in loader_kwargs:
-            self.collate_fn = loader_kwargs['collate_fn']
+            self.buffer_collate_fn = loader_kwargs['collate_fn']
         else:
-            self.collate_fn = default_collate
+            self.buffer_collate_fn = default_collate
         loader_kwargs['collate_fn'] = loader_collate_fn
 
         if 'generator' in loader_kwargs:
@@ -390,24 +390,30 @@ class BufferedDataLoader(object):
         self.loader = DataLoader(
             dataset, batch_size, drop_last=False, **loader_kwargs)
 
-        self.batch_size = batch_size
-        self.drop_last = drop_last
+        super(BufferedDataLoader, self).__init__(
+            dataset, batch_size, drop_last=False, **loader_kwargs)
+
+        # making the buffer_batch_size = batch_size of workers. If we want to
+        # change this one day, then we need to recode the __len__ method with
+        # buffer_batch_size instead of batch_size
+        self.buffer_batch_size = self.batch_size
+        self.buffer_drop_last = drop_last
         self.persistent_buffer = persistent_buffer
-        self.buffer_size = min(buffer_size, len(self.loader.dataset))
+        self.buffer_size = min(buffer_size, len(self.dataset))
         self.buffer = []
         self.batch = []
 
     def __iter__(self):
         ixs, n = [], 0
-        iterloader = iter(self.loader)
+        iterloader = super(BufferedDataLoader,self).__iter__()
         # for data_batch in self.loader:
         while n < len(self):
             try:
                 data_batch = next(iterloader)
             except StopIteration:
-                iterloader = iter(self.loader)
                 if self.persistent_buffer:
                     # Continue loading the buffer and sampling from it
+                    iterloader = super(BufferedDataLoader,self).__iter__()
                     data_batch = next(iterloader)
                 else:
                     # Break and start flushing the buffer
@@ -420,9 +426,9 @@ class BufferedDataLoader(object):
                     ix = ixs.pop()
                     self.batch.append(self.buffer[ix])
                     self.buffer[ix] = data
-                    if len(self.batch) == self.batch_size:
+                    if len(self.batch) == self.buffer_batch_size:
                         n += 1
-                        yield self.collate_fn(self.batch)
+                        yield self.buffer_collate_fn(self.batch)
                         self.batch = []
                 else:
                     self.buffer.append(data)
@@ -432,15 +438,13 @@ class BufferedDataLoader(object):
             random.shuffle(self.buffer)
             while self.buffer:
                 self.batch.append(self.buffer.pop())
-                if len(self.batch) == self.batch_size:
-                    yield self.collate_fn(self.batch)
+                if len(self.batch) == self.buffer_batch_size:
+                    yield self.buffer_collate_fn(self.batch)
                     self.batch = []
-            if len(self.batch) > 0 and not self.drop_last:
-                yield self.collate_fn(self.batch)
+            if len(self.batch) > 0 and not self.buffer_drop_last:
+                yield self.buffer_collate_fn(self.batch)
             self.batch = []
 
-    def __len__(self):
-        return len(self.loader)
 
 
 ##############################################################
