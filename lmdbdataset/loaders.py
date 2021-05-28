@@ -102,6 +102,8 @@ class LMDBDataset(Dataset):
             # non-writable arrays. Anyway, using np.array has no noticeable
             # performance decrease.
             # img = np.asarray(Image.open(BytesIO(img)).convert('RGB'))
+            # with open(fname, 'rb') as f:
+            #     img = Image.open(f.read()).convert('RGB')
             img = Image.open(BytesIO(img)).convert('RGB')
             if self.return_type in {'numpy','torch'}:
                 img = np.array(img)
