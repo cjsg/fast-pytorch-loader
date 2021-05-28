@@ -140,7 +140,7 @@ class _LMDBDataset(object):
                 img = np.array(img)
                 img = np.rollaxis(img, 2)  # HWC to CHW
         else:
-            ValueError('img_type must be jpeg or numpy')
+            ValueError('img_type must be raw or numpy')
         if self.return_type == 'torch':
             img = torch.tensor(img).contiguous()
             target = torch.tensor(target)
