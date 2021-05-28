@@ -19,7 +19,7 @@ setup(
         description=DESCRIPTION,
         long_description=LONG_DESCRIPTION,
         packages=find_packages(),
-        install_requires=['pathlib', 'argparse', 'numpy', 'Pillow', 'lmdb', 'tensorpack'], # add any additional packages that 
+        install_requires=['argparse', 'numpy', 'Pillow', 'lmdb'], # add any additional packages that 
         # needs to be installed along with your package. Eg: 'caer'
         
         keywords=['pytorch', 'fast image loader', 'lmdb'],

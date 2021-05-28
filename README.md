@@ -10,13 +10,9 @@ repo, which I discovered only later.
 
 ## Requirements
 
-- `Pillow`, `numpy`, `argparse`, `pathlib`
+- `Pillow`, `numpy`, `argparse`
 - `lmdb`
-- `tensorpack` (but tensorflow is not needed)
 
-**Remark**: Currently, when loading the `lmdbdataset` package, the underlying
-`tensorpack` package will try to load tensorflow and print `Failed to import
-tensorflow` if it failed. You can ignore this message.
 
 ## Installation
 
@@ -114,10 +110,6 @@ which is needed anywway) can take quite some time (because it is executed on
 CPU, not GPU) and become the bottleneck. (That can of course be counter-acted
 by using more CPUs.) In that case, I recommend using the numpy array version.
 
+## TODO
 
-## TODO:
-
-- make this package independent of tensorpack.dataflow (i.e., essentially,
-  re-write the create_lmdb using directly the `lmdb` python package, instead of
-  the tensorpack.dataflow wrapper). See in particular how it is done in
-  [here](https://github.com/Lyken17/Efficient-PyTorch/blob/master/tools/folder2lmdb.py).
+Make sure that logger defaults to logger.INFO level. Currently doesn't.
