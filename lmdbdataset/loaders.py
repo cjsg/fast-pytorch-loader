@@ -1,5 +1,6 @@
 import os
 import logging
+import lmdb
 from pickle import loads
 from io import BytesIO
 from PIL import Image
@@ -10,7 +11,7 @@ from torch.utils.data import get_worker_info, Dataset, IterableDataset, DataLoad
 from torch.utils.data.dataloader import default_collate
 import torch.distributed as dist
 
-from .dataflow import LMDBData
+# from .dataflow import LMDBData
 
 # try:
 #     from dataflow import LMDBData  # only tensorpack.dataflow needed
@@ -19,93 +20,130 @@ from .dataflow import LMDBData
 
 _logger = logging.getLogger('loader')
 
-class LMDBGetter(LMDBData):
-    '''
-        This class is used internally both by the LMDBDataset class (which uses
-        `__get_item__`) and the LMDBIterDataset (which uses `__iter__`)
-    '''
-    def __init__(self, lmdb_path, shuffle, keys=None):
-        super(LMDBGetter, self).__init__(lmdb_path, shuffle, keys)
-        assert self.keys is not None, "No '__keys__' entry found in lmdb file"
-        self.ix_to_keys = {ix: k for (ix, k) in enumerate(self.keys)}
-        self._start = self._rank_start = self._worker_start = 0
-        self._end = self._rank_end = self._worker_end = len(self)
+class LMDBPrefetcher(object):
+    def __init__(self, lmdb_path, keys=None):
+        """
+        This class is adapted from the LMDBData class in tensorpack.dataflow.
+        It contains the actual LMDB-file reader and will be used by LMDBDataset
+        (which directly invokes __getitem__) and LMDBIterableDataset. It loads
+        the pickled / serialized images from the lmdb file und unpickles /
+        deserializes them.
 
-    def __iter__(self):  # for iterable dataset
-        # for k,v in super(LMDBGetter, self).__iter__():
-        #     yield loads(v)
-        with self._guard:
-            for ix in range(self._worker_start, self._worker_end):
-                k = self.ix_to_keys[ix]
-                v = self._txn.get(k)
-                yield loads(v)
+        Args:
+            lmdb_path (str): a directory or a file.
+            keys (list[str] or str): list of str as the keys.
+                It can also be a format string e.g. ``{:0>8d}`` which will be
+                formatted with the indices from 0 to *total_size - 1*. It will
+                be ignored if the lmdb file contains a `__keys__` argument.
+                If None, then the lmdb must contain a `__keys__` argument. We
+                not automatically reconstructing these keys.
+        """
+        self._lmdb_path = lmdb_path
+        self._open_lmdb()
+        self._size = self._txn.stat()['entries']
+        self._set_keys(keys)
+        _logger.info("Found {} entries in {}".format(self._size, self._lmdb_path))
+        # Clean them up after finding the list of keys, since we don't want to fork them
+        self._close_lmdb()
 
-    def __getitem__(self, ix):  # for map-style dataset
-        with self._guard:
-            k = self.ix_to_keys[ix]  # k = u'{:08}'.format(ix).encode('ascii')
-            v = self._txn.get(k)
-            return loads(v)
+    def _set_keys(self, keys=None):
+        self.keys = self._txn.get(b'__keys__')
+        if self.keys is not None:
+            self.keys = loads(self.keys)
+            self._size -= 1     # delete this item
+            if keys is not None:
+                logging.warn(
+                    'Found keys in lmdb file. Ignoring keys passed as argument.')
+        elif keys is not None:
+            if isinstance(keys, six.string_types):
+                self.keys = map(lambda x: keys.format(x), list(np.arange(self._size)))
+            else:
+                self.keys = keys
+        else:
+            raise ValueError(
+                f'No `__keys__` entry found in lmdb dataset and no keys passed as argument.')
+        assert self._size == len(self.keys), (
+            'len(self.keys) does not match length found using '
+            'lmdb.transaction.stat()')
 
-    @property
-    def len_per_worker(self):
-        return self._worker_end - self._worker_start
+    def _open_lmdb(self):
+        self._lmdb = lmdb.open(self._lmdb_path,
+                               subdir=os.path.isdir(self._lmdb_path),
+                               readonly=True, lock=False, readahead=True,
+                               map_size=1099511627776 * 2, max_readers=100)
+        self._txn = self._lmdb.begin()
+
+    def _close_lmdb(self):
+        self._lmdb.close()
+        del self._lmdb
+        del self._txn
+
+    def reset(self):
+        self._open_lmdb()
+
+    def __len__(self):
+        return self._size
+
+    def __getitem__(self, ix):
+        self._open_lmdb()
+        k = self.keys[ix]
+        v = self._txn.get(k)
+        return loads(v)
 
 
-class LMDBDataset(Dataset):
+class _LMDBDataset(object):
     '''
         A map-style dataset that opens an LMDB file and randomly loads its
         files/images using the LMDB's dictionnary/key-value based access.
-        Note that the LMDB file is opened only once.
+        Note that the LMDB file is opened only once (actually twice: at
+        initialization, and then after worker-creation).
+        
+        Rmk: This class will be reused by LMDBIterDataset. Therefore, we do not
+        want to inherit from PyTorch's Dataset class here, because of possible
+        conflicts with PyTorch's IterableDataset class later.
 
     Arguments
     ---------
         root (str)  Path to LMDB dataset folder (should contain train.lmdb and
             val.lmdb
         split (str) Must be 'train' or 'val'
-        img_type (str)  'numpy' or 'jpeg'. Should be the same than argument
+        img_type (str)  'numpy' or 'pil'. Should be the same than argument
             used in create_lmdb(.) function
-        return_type (str)   'jpeg', 'numpy' or 'torch'. If 'jpeg',
-            then img_type must also be 'jpeg'
+        return_type (str)   'pil', 'numpy' or 'torch'. If 'pil',
+            then img_type must also be 'pil'
     '''
 
     def __init__(self, root, split='train', transform=None,
-                 transform_target=None, shuffle=None, img_type='numpy', return_type='torch',):
-        super(LMDBDataset, self).__init__()
+                 transform_target=None, img_type='numpy', return_type='torch',):
+
         fname = 'train.lmdb' if split == 'train' else 'val.lmdb'
         lmdb_path = os.path.expanduser(os.path.join(root, fname))
         self.lmdb_path = lmdb_path
         assert os.path.exists(self.lmdb_path), f'Non existing path {self.lmdb_path}'
 
-        assert img_type in ['numpy', 'jpeg'], f'Unknonwn img_type {img_type}'
-        if return_type == 'jpeg' and img_type == 'numpy':
-            raise ValueError(f"return_type {return_type} incompatible with img_type 'numpy'. Use return_type 'torch'")
+        assert img_type in ['numpy', 'pil'], f'Unknonwn img_type {img_type}'
+        if return_type == 'pil' and img_type == 'numpy':
+            raise ValueError(
+                f"return_type {return_type} incompatible with img_type 'numpy'. "
+                f"Use return_type 'torch'")
         self.img_type = img_type
         self.return_type = return_type
-
-        shuffle = (split=='train') if shuffle is None else shuffle
-
-        self.getter = LMDBGetter(self.lmdb_path, shuffle=shuffle)
-
-        self._initialized_worker = False
+        self.prefetcher = LMDBPrefetcher(self.lmdb_path)
         self.transform = transform
         self.transform_target = transform_target
+        self._initialized_worker = False
 
     def __getitem__(self, ix):
         if not self._initialized_worker:
-            self.getter.reset_state()
-            self._initialized_worker = True
-        # img, target = self.getter.__getitem__(ix)
-        img, target = self.getter[ix]
-        if self.img_type == 'jpeg':
-            # np.asarray does not copy the underlying data. But this PyTorch
-            # throws a long warning, because PIL.Image apparently returns
-            # non-writable arrays. Anyway, using np.array has no noticeable
-            # performance decrease.
-            # img = np.asarray(Image.open(BytesIO(img)).convert('RGB'))
-            # with open(fname, 'rb') as f:
-            #     img = Image.open(f.read()).convert('RGB')
+            self.initialize_worker()
+        img, target = self.prefetcher[ix]
+        if self.img_type == 'pil':
             img = Image.open(BytesIO(img)).convert('RGB')
             if self.return_type in {'numpy','torch'}:
+                # img = np.asarray(img) would be better, but bc it doesn't
+                # copy the tensor data. But Image returns an img that is
+                # read-only, so that torch trows an anooying warning.
+                # np.array doesn't seem slower.
                 img = np.array(img)
                 img = np.rollaxis(img, 2)  # HWC to CHW
         else:
@@ -118,17 +156,26 @@ class LMDBDataset(Dataset):
         if target is None:
             target = torch.tensor(-1, dtype=torch.long)
         if self.transform_target is not None:
-            target = self.transform_target
+            target = self.transform_target(target)
         return img, target
 
+    def initialize_worker(self):
+        self.prefetcher.reset()
+        self._initialized_worker = True
+
     def __len__(self):
-        if hasattr(self.getter, '__len__'):
-            return len(self.getter)
-        else:
-            return 0
+        return len(self.prefetcher)
 
+class LMDBDataset(_LMDBDataset, Dataset):
+    '''
+        This is the same as _LMBDDataset, but with the inheritance from
+        PyTorch's Dataset class added. We add it here and not in _LMDBDataset
+        so that the iterable LMDBIterDataset can inherit from PyTorch's
+        IterableDataset class only, and avoid conflicts with the Dataset class.
+    '''
+    pass
 
-class LMDBIterDataset(IterableDataset):
+class LMDBIterDataset(_LMDBDataset, IterableDataset):
     '''
         An iterable dataset that opens an LMDB file and reads it in the order
         of its keys (which should be the order of storage). If multiple workers
@@ -139,10 +186,10 @@ class LMDBIterDataset(IterableDataset):
         root (str)  Path to LMDB dataset folder (should contain train.lmdb and
             val.lmdb
         split (str) Must be 'train' or 'val'
-        img_type (str)  'numpy' or 'jpeg'. Should be the same than argument
+        img_type (str)  'numpy' or 'pil'. Should be the same than argument
             used in create_lmdb(.) function
-        return_type (str)   'jpeg', 'numpy' or 'torch'. If 'jpeg',
-            then img_type must also be 'jpeg'
+        return_type (str)   'pil', 'numpy' or 'torch'. If 'pil',
+            then img_type must also be 'pil'
         distributed (bool)  Whether this dataset is used in a distributed
             context (e.g., with DistributedDataParallel). Defaults to False,
             except if rank is not None or world_size > 1.
@@ -160,30 +207,18 @@ class LMDBIterDataset(IterableDataset):
 
     def __init__(self, root, split='train', transform=None,
                  transform_target=None, img_type='numpy', return_type='torch',
-                 distributed=None, rank=None, world_size=None):  # or 'jpeg'):
-        # based on timm's ImageDataset
-        super(LMDBIterDataset, self).__init__()
-        fname = 'train.lmdb' if split == 'train' else 'val.lmdb'
-        lmdb_path = os.path.expanduser(os.path.join(root, fname))
-        self.lmdb_path = lmdb_path
-        assert os.path.exists(self.lmdb_path), f'Non existing path {self.lmdb_path}'
+                 distributed=None, rank=None, world_size=None):
 
-        assert img_type in ['numpy', 'jpeg'], f'Unknonwn img_type {img_type}'
-        if return_type == 'jpeg' and img_type == 'numpy':
-            raise ValueError(f"return_type {return_type} incompatible with img_type 'numpy'. Use return_type 'torch'")
-        self.img_type = img_type
-        self.return_type = return_type
-
-        self.getter = LMDBGetter(self.lmdb_path, shuffle=False)
-        # Alternatively: LMDBSerializer.load(self.root, shuffle=False)
-        self.transform = transform
-        self.transform_target = transform_target
+        super(LMDBIterDataset, self).__init__(
+            root, split, transform, transform_target, img_type, return_type)
 
         self._distributed = distributed
         if self._distributed is None:
             self._distributed = (rank is not None) or (
                 (world_size is not None) and world_size > 1)
 
+        self.start = self.worker_start = self.rank_start = 0
+        self.end = self.worker_end = self.rank_end = len(self.prefetcher)
         # Contrary to workers which get initialized by the dataloader, the rank
         # is already defined at initialization of the dataset. Hence, we define
         # the rank here (which is usefull for the dataloader to get the correct
@@ -193,13 +228,13 @@ class LMDBIterDataset(IterableDataset):
         self._initialized_worker = False
 
     def initialize_rank(self, rank, world_size):
-        # Determine _rank_start / _rank_end
+        # Determine rank_start / rank_end
         if self._distributed:
             self._rank = dist.get_rank() if rank is None else rank
             self._world_size = dist.get_world_size() if world_size is None else world_size
-            per_rank = int(np.ceil((self.getter._end - self.getter._start) / float(self._world_size)))
-            self.getter._rank_start = self.getter._start + self._rank * per_rank
-            self.getter._rank_end = min(self.getter._rank_start + per_rank, self.getter._end)
+            per_rank = int(np.ceil((self.end - self.start) / float(self._world_size)))
+            self.rank_start = self.start + self._rank * per_rank
+            self.rank_end = min(self.rank_start + per_rank, self.end)
         else:
             self._rank = 0
             self._world_size = 1
@@ -210,64 +245,39 @@ class LMDBIterDataset(IterableDataset):
             each worker gets a different chunk of the dataset to load, and
             loads it sequentially.
         '''
-        self.getter.reset_state()
+        self.prefetcher.reset()
 
-        # Determine _worker_start / _worker_end in the current rank/process
+        # Determine worker_start / worker_end in the current rank/process
         worker_info = get_worker_info()
         if worker_info is not None:  # multi-process loading: we are in a worker
-            per_worker = int(np.ceil((self.getter._rank_end - self.getter._rank_start) / float(worker_info.num_workers)))
+            per_worker = int(np.ceil((self.rank_end - self.rank_start) / float(worker_info.num_workers)))
             worker_id = worker_info.id
-            self.getter._worker_start = self.getter._rank_start + worker_id * per_worker
-            self.getter._worker_end = min(self.getter._worker_start + per_worker, self.getter._rank_end)
+            self.worker_start = self.rank_start + worker_id * per_worker
+            self.worker_end = min(self.worker_start + per_worker, self.rank_end)
             _logger.debug(
                 f"Initialized worker {worker_id} in rank {self._rank}.\t"
-                f"Start: {self.getter._worker_start}\t"
-                f"End: {self.getter._worker_end}")
+                f"Start: {self.worker_start}\t"
+                f"End: {self.worker_end}")
 
         self._initialized_worker = True
 
     def __iter__(self):
         if not self._initialized_worker:
             self.initialize_worker()
-        for img, target in self.getter:
-            # if self.img_type == 'numpy':
-            #     img = torch.tensor(img)
-            if self.img_type == 'jpeg':
-                # img = np.asarray(Image.open(BytesIO(img)).convert('RGB'))
-                # img = np.array(img)
-                # img = torch.tensor(img).permute(2, 0, 1).contiguous()
-                img = Image.open(BytesIO(img)).convert('RGB')
-                if self.return_type in {'numpy','torch'}:
-                    # img = np.asarray(img) would be better, but bc it doesn't
-                    # copy the tensor data. But Image returns an img that is
-                    # read-only, so that torch trows an anooying warning.
-                    # np.array doesn't seem slower.
-                    img = np.array(img)
-                    img = np.rollaxis(img, 2)  # HWC to CHW
-            else:
-                ValueError('img_type must be jpeg or numpy')
-            if self.return_type == 'torch':
-                img = torch.tensor(img).contiguous()
-                target = torch.tensor(target)
-            if self.transform is not None:
-                img = self.transform(img)
-            if target is None:
-                target = torch.tensor(-1, dtype=torch.long)
-            if self.transform_target is not None:
-                target = self.transform_target(target)
-            yield img, target
+        for ix in range(self.worker_start, self.worker_end):
+            yield super(LMDBIterDataset,self).__getitem__(ix)
 
     def __len__(self):
         # returns the length of the chunk seen by this process
-        return self.getter._rank_end - self.getter._rank_start
+        return self.rank_end - self.rank_start
 
-    def full_length(self):
+    def full_len(self):
         # returns the full length of the dataset
-        return self.getter._end - self.getter._start
+        return self.end - self.start
 
     def worker_len(self):
         # returns the length of the chunk seen by this worker
-        return self.getter._worker_end - self.getter._worker_start
+        return self.worker_end - self.worker_start
 
 
 def list_collate_fn(l):
