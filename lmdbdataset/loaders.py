@@ -11,14 +11,7 @@ from torch.utils.data import get_worker_info, Dataset, IterableDataset, DataLoad
 from torch.utils.data.dataloader import default_collate
 import torch.distributed as dist
 
-# from .dataflow import LMDBData
-
-# try:
-#     from dataflow import LMDBData  # only tensorpack.dataflow needed
-# except ImportError:
-#     from tensorpack.dataflow import LMDBData
-
-_logger = logging.getLogger('loader')
+_logger = logging.getLogger(__name__)
 
 class LMDBPrefetcher(object):
     def __init__(self, lmdb_path, keys=None):
@@ -107,10 +100,10 @@ class _LMDBDataset(object):
         root (str)  Path to LMDB dataset folder (should contain train.lmdb and
             val.lmdb
         split (str) Must be 'train' or 'val'
-        img_type (str)  'numpy' or 'pil'. Should be the same than argument
+        img_type (str)  'numpy' or 'raw'. Should be the same than argument
             used in create_lmdb(.) function
-        return_type (str)   'pil', 'numpy' or 'torch'. If 'pil',
-            then img_type must also be 'pil'
+        return_type (str)   'raw', 'numpy' or 'torch'. If 'raw',
+            then img_type must also be 'raw'
     '''
 
     def __init__(self, root, split='train', transform=None,
@@ -121,8 +114,8 @@ class _LMDBDataset(object):
         self.lmdb_path = lmdb_path
         assert os.path.exists(self.lmdb_path), f'Non existing path {self.lmdb_path}'
 
-        assert img_type in ['numpy', 'pil'], f'Unknonwn img_type {img_type}'
-        if return_type == 'pil' and img_type == 'numpy':
+        assert img_type in ['numpy', 'raw'], f'Unknonwn img_type {img_type}'
+        if return_type == 'raw' and img_type == 'numpy':
             raise ValueError(
                 f"return_type {return_type} incompatible with img_type 'numpy'. "
                 f"Use return_type 'torch'")
@@ -137,7 +130,7 @@ class _LMDBDataset(object):
         if not self._initialized_worker:
             self.initialize_worker()
         img, target = self.prefetcher[ix]
-        if self.img_type == 'pil':
+        if self.img_type == 'raw':
             img = Image.open(BytesIO(img)).convert('RGB')
             if self.return_type in {'numpy','torch'}:
                 # img = np.asarray(img) would be better, but bc it doesn't
@@ -186,10 +179,10 @@ class LMDBIterDataset(_LMDBDataset, IterableDataset):
         root (str)  Path to LMDB dataset folder (should contain train.lmdb and
             val.lmdb
         split (str) Must be 'train' or 'val'
-        img_type (str)  'numpy' or 'pil'. Should be the same than argument
+        img_type (str)  'numpy' or 'raw'. Should be the same than argument
             used in create_lmdb(.) function
-        return_type (str)   'pil', 'numpy' or 'torch'. If 'pil',
-            then img_type must also be 'pil'
+        return_type (str)   'raw', 'numpy' or 'torch'. If 'raw',
+            then img_type must also be 'raw'
         distributed (bool)  Whether this dataset is used in a distributed
             context (e.g., with DistributedDataParallel). Defaults to False,
             except if rank is not None or world_size > 1.

@@ -8,13 +8,13 @@ import numpy as np
 from PIL import Image
 from pickle import dumps
 from tqdm import tqdm
+from time import sleep
 
 from torchvision.datasets import ImageFolder
 from torch.utils.data import DataLoader
 
 
-logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
+_logger = logging.getLogger(__name__)
 
 def open_to_raw(path_to_file):
     with open(path_to_file, 'rb') as f:
@@ -40,7 +40,7 @@ def put_or_grow(txn, key, value):
     txn.abort()
     curr_size = db.info()['map_size']
     new_size = curr_size * 2
-    logger.info("Doubling LMDB map_size to {:.2f}GB".format(new_size / 10**9))
+    _logger.info("Doubling LMDB map_size to {:.2f}GB".format(new_size / 10**9))
     db.set_mapsize(new_size)
     txn = db.begin(write=True)
     txn = put_or_grow(txn, key, value)
@@ -59,12 +59,16 @@ class ImageFolderToBinary(ImageFolder):
         else:
             raise ValueError(f'Unknown save_as format {save_as}.')
 
-        logger.info('Searching for images...')
+        _logger.info(f'Searching for images in {root}.')
         super(ImageFolderToBinary, self).__init__(root, loader=loader)
-        logger.info(
-            f'Found {len(self)} images split accross {len(self.classes)} '
-            f'categories in {root}.')
+        _logger.info(
+            f'Found {len(self)} images split accross {len(self.classes)}.')
 
+
+# Can't create this on the fly inside of create_lmdb, because of possible
+# pickling issues when starting multiprocessing (when num_workers > 0).
+def identity_collate_fn(x):
+    return x
 
 def create_lmdb(from_dir, to_dir, name, save_as='raw', shuffle=True, workers=0,
                 write_freq=5000):
@@ -90,8 +94,11 @@ def create_lmdb(from_dir, to_dir, name, save_as='raw', shuffle=True, workers=0,
     assert not os.path.isfile(to_file), "LMDB file {} exists!".format(to_file)
     assert save_as in ['raw', 'numpy']
 
+    collate_fn = identity_collate_fn  # the default collate_fn converts to torch.tensor
     dataset = ImageFolderToBinary(from_dir, save_as)
-    dataloader = DataLoader(dataset, batch_size=None, shuffle=shuffle, num_workers=workers)
+    dataloader = DataLoader(
+        dataset, batch_size=None, shuffle=shuffle, collate_fn=collate_fn,
+        num_workers=workers)
         
     # The code below is copied from tensorpack.dataflow, LMDBSerializer.save
     # It's OK to use super large map_size on Linux, but not on other platforms
@@ -101,7 +108,9 @@ def create_lmdb(from_dir, to_dir, name, save_as='raw', shuffle=True, workers=0,
                    map_size=map_size, readonly=False,
                    meminit=False, map_async=True)    # need sync() at the end
 
-    logger.info(f'Starting to serialize datataset from {from_dir} to {to_file}')
+    _logger.info(
+        f'Starting to serialize datataset from {from_dir} to {to_file} in '
+        f'format `{save_as}`')
     with tqdm(total=len(dataloader)) as pbar:
         idx = -1
 
@@ -118,9 +127,10 @@ def create_lmdb(from_dir, to_dir, name, save_as='raw', shuffle=True, workers=0,
         with db.begin(write=True) as txn:
             txn = put_or_grow(txn, b'__keys__', dumps(keys))
 
-        logger.info("Flushing database ...")
-        db.sync()
+    _logger.info("Flushing database ...")
+    db.sync()
     db.close()
+    _logger.info("Done.\n")
 
 
 parser = argparse.ArgumentParser(description='Convert ImageNet Folder to LMDB File')
@@ -142,11 +152,13 @@ parser.add_argument('--workers', '-workers', default=0, type=int,
 
 if __name__ == '__main__':
     args = parser.parse_args()
-    from_train_dir = os.path.join(args.from_dir, 'train')
-    from_val_dir = os.path.join(args.from_dir, 'val')
+    from_train_dir = os.path.join(args.from_dir, 'train/')
+    from_val_dir = os.path.join(args.from_dir, 'val/')
     if args.split in ['val', None]:
         create_lmdb(
-            from_val_dir, args.to_dir, 'val', args.save_as, args.workers)
+            from_val_dir, args.to_dir, 'val', save_as=args.save_as,
+            shuffle=False, workers=args.workers)
     if args.split in ['train', None]:
         create_lmdb(
-            from_train_dir, args.to_dir, 'train', args.save_as, args.workers)
+            from_train_dir, args.to_dir, 'train', save_as=args.save_as,
+            shuffle=True, workers=args.workers)
