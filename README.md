@@ -1,7 +1,7 @@
 # Fast LMDB-file based image(net) loaders for PyTorch
 
 This repo provides fast pytorch-friendly loaders for ImageNet, based on LMDB
-files. It is based on the tensorpack.dataflow package and inspired by
+files. It is inspired by the tensorpack.dataflow package and by
 [this](https://github.com/AnjieCheng/Fast-ImageNet-Dataloader) github repo.
 But the solution proposed ended up being closer to
 the one from the
