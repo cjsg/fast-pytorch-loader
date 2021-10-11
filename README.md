@@ -42,7 +42,7 @@ python create_lmdb --from_dir SOURCE_DIR/ --to_dir TARGET_DIR/ --split TRAIN_OR_
 where `SOURCE_DIR` is the path to the ImageNet root directory (which should
 contain `train/` and `val/`directories; `TARGET_DIR/` is the path to the
 directory where to store the `.lmdb` file(s), and `FORMAT` can take 2 values:
-`jpeg` or `numpy` depending on whether you want the images encoded as JPEG
+`raw` or `numpy` depending on whether you want the images encoded as JPEG
 images or as numpy array inside the `.lmdb` files (see below).
 
 #### The datasets and loaders
@@ -51,18 +51,18 @@ This package implements two LMDB-based loading proceedures: one on the iterable
 `LMDBIterDataset` combined with a custom `BufferedDataLoader`,
 ```python
 from loaders import LMDBIterDataset, BufferedDataLoader
-dataset = LMDBIterDataset(root, split, transform, transform_target, imgtype)
+dataset = LMDBIterDataset(root, split, transform, transform_target, img_type)
 trainloader = BufferedDataLoader(buffer_size, dataset, batch_size=bs,
     persistent_buffer, num_workers, **pytorch_loader_kwargs)
 ```
 and one based on the map-style `LMDBDataset` combined with the usual PyTorch `DataLoader`:
 ```python
 from loaders import LMDBDataset
-dataset = LMDBDataset(root, split, transform, transform_target, shuffle, imgtype)
+dataset = LMDBDataset(root, split, transform, transform_target, shuffle, img_type)
 loader = torch.utils.data.DataLoader(dataset, batch_size, num_workers)
 ```
 Here, `root` is the path to the dir containing the `.lmdb` (created above),
-`split` is `val` or `train`, `imgtype`is `numpy` or `jpeg` (must the same than
+`split` is `val` or `train`, `img_type`is `numpy` or `raw` (must the same than
 the `FORMAT` used in `create_lmdb`) and `tranform`, `transform_target` are the
 usual pytorch image/target transforms to be applied to every image.
 

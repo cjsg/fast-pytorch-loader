@@ -196,6 +196,10 @@ class LMDBIterDataset(_LMDBDataset, IterableDataset):
     NB: LMDBDataset has no handling for distributed processes, because for
     map-style datasets, the distribution of idx accross processes should be
     handled by passing PyTorch's DistributedSampler to the DataLoader.
+
+    Returns
+    -------
+        img, label where type(img) = return_type (i.e., raw, numpy or torch)
     '''
 
     def __init__(self, root, split='train', transform=None,
@@ -282,7 +286,7 @@ def list_collate_fn(l):
 class BufferedDataLoader(DataLoader):
     '''
     This dataloader wraps the usual torch.utils.data.DataLoader, which is
-    accessed internally stored in and accessed via self.loader. 
+    internally stored in and accessed via self.loader. 
 
     Args
     ----
@@ -303,13 +307,13 @@ class BufferedDataLoader(DataLoader):
             datapoints (actually `len(dataloader)` batches), i.e., it has not
             finished its 'epoch'. The `persistent_buffer` key says how it
             should finish that epoch: either by stopping the workers and
-            popping data from the buffer until its empty (False); or by letting
-            the workers start a new loop over the dataset and proceeding with
-            the sample-and-replace process in the buffer as before. That way,
-            the buffer will not need to get filled from scratch again in the
-            next epoch. If `persistent_workers` is True, then, in the next
-            epoch, the workers will resume their loop over the dataset from
-            wherever they finished in the previous epoch.
+            popping data from the buffer until it is empty (False); or by
+            letting the workers start a new loop over the dataset and
+            proceeding with the sample-and-replace process in the buffer as
+            before. That way, the buffer will not need to get filled from
+            scratch again in the next epoch. If `persistent_workers` is True,
+            then, in the next epoch, the workers will resume their loop over
+            the dataset from wherever they finished in the previous epoch.
 
         drop_last (bool)    Whether or not to drop the last incomplete batch.
             Irrelevant when `persistent_buffer` is True.
@@ -323,6 +327,11 @@ class BufferedDataLoader(DataLoader):
 
         **loader_args   Named arguments. Can be any of the arguments of the
             usual torch.utils.data.DataLoader.
+
+    Returns
+    -------
+        Batch of (imgs, labels), where type(imgs) = return_type (raw, numpy or
+        torch).
 
     Workflow of self.__iter__:
     --------------------------
